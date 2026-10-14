@@ -252,3 +252,104 @@ class APBundle:
                 batch = make_batch([p], [prec], [rows[0].adduct], [rows[0].instrument_type], [DEFAULT_CE], [mode])
                 out.append(self._run(self.merged, batch))
         return np.mean(out, axis=0).astype(np.float32) if out else None
+
+
+# --------------------------------------------------------------------------------------
+# Our model (casmi6311 layout): peak tokens with m/z rounded to 0.01 Da, at most 256 per
+# spectrum, one CLS token for precursor / adduct / CE / polarity / instrument, CLS pooling.
+# --------------------------------------------------------------------------------------
+MAX_PEAKS = 256
+
+
+def prep_peaks(mz: NDArray, inten: NDArray, max_peaks: int = MAX_PEAKS) -> tuple[NDArray[np.float32],
+                                                                                  NDArray[np.float32]]:
+    """m/z rounded to 0.01 Da (duplicates keep the stronger peak), top ``max_peaks`` by intensity,
+    m/z order, sqrt(intensity / max)."""
+    mz = np.round(np.asarray(mz, np.float64), 2)
+    it = np.asarray(inten, np.float64)
+    ok = it > 0
+    mz, it = mz[ok], it[ok]
+    if not len(mz):
+        return np.zeros(0, np.float32), np.zeros(0, np.float32)
+    o = np.lexsort((-it, mz))  # by m/z, strongest first within an m/z
+    mz, it = mz[o], it[o]
+    first = np.concatenate([[True], mz[1:] != mz[:-1]])
+    mz, it = mz[first], it[first]
+    if len(mz) > max_peaks:
+        top = np.sort(np.argpartition(-it, max_peaks - 1)[:max_peaks])
+        mz, it = mz[top], it[top]
+    return mz.astype(np.float32), np.sqrt(it / it.max()).astype(np.float32)
+
+
+class SpecFormer(nn.Module):
+    """Spectrum → fingerprint logits; ``forward`` takes a ``Batch`` with ``ce`` NaN where unknown."""
+
+    def __init__(self, nbits: int, d: int = 512, layers: int = 8, heads: int = 8, drop: float = 0.1) -> None:
+        super().__init__()
+        self.mz_emb = SinEmb(d)
+        self.nl_emb = SinEmb(d)
+        self.pk = nn.Linear(2 * d + 1, d)
+        self.prec_emb = SinEmb(d)
+        self.ad = nn.Embedding(len(ADDUCT_LIST), d)
+        self.ins = nn.Embedding(len(INSTR_LIST), d)
+        self.pol = nn.Embedding(2, d)
+        self.ce = nn.Linear(2, d)
+        self.cls = nn.Linear(d, d)
+        self.blocks = nn.ModuleList([Block(d, heads, drop) for _ in range(layers)])
+        self.norm = nn.LayerNorm(d)
+        self.head = nn.Sequential(nn.Linear(d, 2048), nn.GELU(), nn.Dropout(drop), nn.Linear(2048, nbits))
+
+    def forward(self, mz, it, pad, prec, ad, ins, ce, mode) -> torch.Tensor:
+        b = mz.shape[0]
+        nl = (prec[:, None] - mz).clamp(min=0)
+        p = self.pk(torch.cat([self.mz_emb(mz), self.nl_emb(nl), it.unsqueeze(-1)], -1))
+        known = torch.isfinite(ce)
+        ce_feat = torch.stack([torch.where(known, ce / 100.0, torch.zeros_like(ce)), known.float()], -1)
+        g = (self.cls(self.prec_emb(prec)) + self.ad(ad) + self.ins(ins) + self.pol((mode > 0).long())
+             + self.ce(ce_feat))
+        x = torch.cat([g.unsqueeze(1), p], 1)
+        pad = torch.cat([torch.zeros(b, 1, dtype=torch.bool, device=pad.device), pad], 1)
+        for blk in self.blocks:
+            x = blk(x, pad)
+        return self.head(self.norm(x[:, 0]))
+
+
+@dataclass
+class CasmiBundle:
+    """Our SpecFormer checkpoint(s); logits averaged over models and over a molecule's spectra."""
+
+    nets: list[SpecFormer]
+    nbits: int
+    device: str
+    bits: None = None
+    layout: str = "casmi6311"
+
+    @classmethod
+    def load(cls, paths: Sequence[Path], device: str | None = None) -> CasmiBundle:
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        nets, nbits = [], None
+        for p in sorted(paths):
+            ck = torch.load(p, map_location="cpu", weights_only=True)
+            cfg = ck["config"]
+            net = SpecFormer(cfg["nbits"], d=cfg["d"], layers=cfg["layers"], heads=cfg["heads"])
+            net.load_state_dict(ck["model"])
+            nets.append(net.to(device).eval())
+            nbits = cfg["nbits"]
+        if not nets:
+            raise FileNotFoundError("no fingerprint checkpoints given")
+        return cls(nets, int(nbits), device)
+
+    @torch.no_grad()
+    def logits(self, spectra: pd.DataFrame) -> NDArray[np.float32] | None:
+        rows = [r for r in spectra.itertuples(index=False)]
+        kept = [(prep_peaks(r.ms2_mzs, r.ms2_normalized_intensities), r) for r in rows]
+        kept = [(p, r) for p, r in kept if len(p[0])]
+        if not kept:
+            return None
+        rs = [r for _, r in kept]
+        batch = make_batch([p for p, _ in kept], [r.precursor_mz for r in rs], [r.adduct for r in rs],
+                           [r.instrument_type for r in rs], [mean_ce(r.collision_energy_ev) for r in rs],
+                           [1.0 if r.ionization_mode == "positive" else -1.0 for r in rs])
+        args = batch.tensors(self.device)
+        z = [n(*args).float().mean(0).cpu().numpy() for n in self.nets]
+        return np.mean(z, axis=0).astype(np.float32)

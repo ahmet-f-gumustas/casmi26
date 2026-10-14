@@ -9,6 +9,7 @@ layout has changed before), runs ``casmi.pipeline`` on ``test.parquet`` and writ
     python scripts/make_kaggle_notebook.py --local-check   # also run it locally on the placeholder test
     python scripts/make_kaggle_notebook.py --mode combined [--ranker outputs/ranker_v1.json] [--pool pubchem]
     python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp_ap.json --fp ap   # GPU
+    python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp.json --fp casmi    # our model
 
 ``--local-check`` builds a fake ``/kaggle/input`` from symlinks, runs the notebook's
 code cells as a script, validates the CSV and scores it against the placeholder
@@ -41,9 +42,11 @@ POOLS = {"base": ("red6161/casmi26-pool", POOL_DIR),
 OUT = REPO_ROOT / "kaggle" / "submission"
 # Fingerprint models, attached as published (not re-uploaded): name -> (datasets, local folders).
 # "ap": prvsiyan's FPNet checkpoints (CC BY-NC-SA 4.0) and the fp_bits.npy column order; see NOTICE.
+# "casmi": our SpecFormer (scripts/train_fp.py), uploaded as red6161/casmi26-fp-model.
 FP_MODELS = {"ap": (["prvsiyan/casmi26-fp-models-v2", "prvsiyan/coconut-casmi26-candidates"],
                     {"casmi26-fp-models-v2": REPO_ROOT / "external" / "prvsiyan" / "fp_models_v2",
-                     "coconut-casmi26-candidates": REPO_ROOT / "external" / "prvsiyan" / "coconut_fp_bits"})}
+                     "coconut-casmi26-candidates": REPO_ROOT / "external" / "prvsiyan" / "coconut_fp_bits"}),
+             "casmi": (["red6161/casmi26-fp-model"], {"casmi26-fp-model": WORK_DIR / "fp_models" / "submit"})}
 
 SETUP = r'''
 import glob, os, subprocess, sys, time, resource
@@ -111,6 +114,12 @@ else:
         ckpts = sorted(glob.glob(os.path.join(INPUT, "**", "fp_*.pt"), recursive=True))
         fp_model = APBundle.load(ckpts, bits=np.load(find("fp_bits.npy"), allow_pickle=False))
         print(f"fingerprint models {[os.path.basename(c) for c in ckpts]} on {fp_model.device}, "
+              f"{time.time() - T0:.0f}s", flush=True)
+    elif CASMI_FP == "casmi":
+        from casmi.fpmodel import CasmiBundle
+        ckpts = sorted(glob.glob(os.path.join(INPUT, "**", "fp_casmi*.pt"), recursive=True))
+        fp_model = CasmiBundle.load(ckpts)
+        print(f"fingerprint model {[os.path.basename(c) for c in ckpts]} on {fp_model.device}, "
               f"{time.time() - T0:.0f}s", flush=True)
     preds, _ = run_combined_pipeline(test, pool, library, index, row_key, CASMI_RANKER, cfg, fp_model=fp_model)
 sub = make_submission(preds, sample["molecule_id"].tolist())

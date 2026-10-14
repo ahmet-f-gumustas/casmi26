@@ -80,21 +80,34 @@ def descriptors(smiles: Sequence[str], layout: str, bits: NDArray[np.int64] | No
     return out
 
 
-def score(z: NDArray[np.float32], packed: Sequence[NDArray[np.uint8] | None], nbits: int) -> NDArray[np.float64]:
-    """f·z per candidate, shifted so the lowest is 1e-6; unparsable candidates score 0."""
+def score(z: NDArray[np.float32], packed: Sequence[NDArray[np.uint8] | None], nbits: int,
+          how: str = "dot") -> NDArray[np.float64]:
+    """Candidate scores, positive; unparsable candidates score 0.
+
+    ``dot``: f·z shifted so the lowest is 1e-6. ``soft_tanimoto``: Tanimoto between f and the
+    predicted bit probabilities sigmoid(z), the similarity the ranking loss is trained on.
+    """
     ok = [i for i, f in enumerate(packed) if f is not None]
     out = np.zeros(len(packed))
     if not ok:
         return out
     f = np.unpackbits(np.stack([packed[i] for i in ok]), axis=1, count=nbits).astype(np.float32)
-    raw = f @ np.asarray(z, dtype=np.float32)
-    out[ok] = raw - raw.min() + 1e-6
+    z = np.asarray(z, dtype=np.float32)
+    if how == "dot":
+        raw = f @ z
+        out[ok] = raw - raw.min() + 1e-6
+    elif how == "soft_tanimoto":
+        p = 1.0 / (1.0 + np.exp(-z))
+        inter = f @ p
+        out[ok] = inter / np.maximum(f.sum(axis=1) + p.sum() - inter, 1e-6) + 1e-6
+    else:
+        raise ValueError(f"unknown fingerprint score {how!r}")
     return out
 
 
 def fingerprint_channel(logits: Mapping[str, NDArray[np.float32]], windows: Mapping[str, list[str]],
                         smiles_of: Mapping[str, str], layout: str, bits: NDArray[np.int64] | None = None,
-                        workers: int = 1, cache: dict | None = None) -> dict[str, dict[str, float]]:
+                        workers: int = 1, cache: dict | None = None, how: str = "dot") -> dict[str, dict[str, float]]:
     """Channel scores per molecule from its logits ``z``; candidate fingerprints are cached by key."""
     cache = {} if cache is None else cache
     nbits = len(bits) if bits is not None else LAYOUTS[layout]
@@ -104,5 +117,5 @@ def fingerprint_channel(logits: Mapping[str, NDArray[np.float32]], windows: Mapp
     for m, z in logits.items():
         keys = windows.get(m, [])
         if keys:
-            out[m] = dict(zip(keys, score(z, [cache[k] for k in keys], nbits).tolist()))
+            out[m] = dict(zip(keys, score(z, [cache[k] for k in keys], nbits, how).tolist()))
     return out

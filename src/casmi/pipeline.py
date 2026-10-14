@@ -9,6 +9,7 @@ Kaggle notebook passes ``test.parquet`` and the full cleaned library.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from multiprocessing import Pool
@@ -226,18 +227,24 @@ def library_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], lib
     return agg, {m: dict(zip(s["key"], s["max"].astype(float))) for m, s in scores.items() if len(s)}
 
 
-def fingerprint_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], smiles_of: Mapping[str, str],
-                       model, workers: int = 1, cache: dict | None = None) -> ChannelScores:
-    """Fingerprint-channel scores; ``model`` has ``logits(spectra) -> z``, ``layout`` and ``bits``."""
-    from casmi.channels.fingerprint import fingerprint_channel
-
+def fingerprint_logits(queries: pd.DataFrame, windows: Mapping[str, list[str]], model) -> dict[str, np.ndarray]:
+    """Per-bit logits per molecule (``model.logits`` over its spectra) for molecules with candidates."""
     logits = {}
     for mol_id, grp in queries.groupby("molecule_id"):
         if windows.get(mol_id):
             z = model.logits(grp)
             if z is not None:
                 logits[mol_id] = z
-    return fingerprint_channel(logits, windows, smiles_of, model.layout, model.bits, workers=workers, cache=cache)
+    return logits
+
+
+def fingerprint_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], smiles_of: Mapping[str, str],
+                       model, workers: int = 1, cache: dict | None = None, how: str = "dot") -> ChannelScores:
+    """Fingerprint-channel scores; ``model`` has ``logits(spectra) -> z``, ``layout`` and ``bits``."""
+    from casmi.channels.fingerprint import fingerprint_channel
+
+    return fingerprint_channel(fingerprint_logits(queries, windows, model), windows, smiles_of, model.layout,
+                               model.bits, workers=workers, cache=cache, how=how)
 
 
 def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
@@ -266,7 +273,15 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     if "fingerprint" in need:
         if fp_model is None:
             raise ValueError("the ranker reads the fingerprint channel but no fp_model was given")
-        channels["fingerprint"] = fingerprint_scores(queries, windows, smiles_of, fp_model, workers=cfg.workers)
+        from casmi.channels.fingerprint import fingerprint_channel
+
+        t0 = time.time()
+        logits = fingerprint_logits(queries, windows, fp_model)
+        t1 = time.time()
+        channels["fingerprint"] = fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
+                                                      workers=cfg.workers)
+        print(f"fingerprint channel: logits for {len(queries)} spectra / {len(logits)} molecules in {t1 - t0:.1f}s, "
+              f"candidates scored in {time.time() - t1:.1f}s", flush=True)
     preds = {}
     for mol_id, keys in windows.items():
         per = {c: channels[c].get(mol_id, {}) for c in channels}

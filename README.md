@@ -105,7 +105,9 @@ casmi26/
 │   ├── difficulty.py # nn_tanimoto / analog counts (blocked matmul), difficulty bins, profile tilt
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── pubchem.py   # reader for the mass-sorted PubChem SMILES index, NP-likeness / scaffold filter
-│   ├── channels/    # library (entropy similarity), analog (mass-shifted analogs), fragment (bond breaks)
+│   ├── fpmodel.py   # spectrum → fingerprint models: SpecFormer (ours), FPNet (prvsiyan checkpoints)
+│   ├── channels/    # library (entropy similarity), analog (mass-shifted analogs), fragment (bond breaks),
+│   │                # fingerprint (candidate f·z against the model's bit logits)
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
 ├── kaggle/          # generated submission notebook + kernel-metadata.json
@@ -125,10 +127,13 @@ casmi26/
 | `scripts/analog_difficulty.py` | `notes/ANALOG_DIFFICULTY_<prefix>.md`: Class 2 MRR by nn_tanimoto bin, NP-proxy profile, LB-implied target profile (`outputs/difficulty_profile.json`) |
 | `scripts/build_pool.py --pubchem` | `external/pool_pubchem/`: pool + PubChem rows filtered by NP-likeness / COCONUT scaffold (≤ 3M); `notes/POOL_PUBCHEM.md` |
 | `scripts/error_analysis.py` | `notes/ERROR_ANALYSIS.md`, `outputs/error_analysis_<prefix>.parquet`: Class 2 failures of the analog channel by cluster (near-isomer / retrieval / intermediate), NP subset |
+| `scripts/build_fp_data.py` | `outputs/fp_data/`: library spectra as fingerprint-model inputs (m/z rounded to 0.01 Da, ≤ 256 peaks), casmi6311 pool fingerprints, ±10 ppm decoys, per-split-family training masks |
+| `scripts/train_fp.py` | `outputs/fp_models/<name>/fp_casmi.pt`: SpecFormer (8 × 512 transformer, CLS) trained with BCE (rare-bit pos_weight) + soft-Tanimoto ranking loss over 32 decoys |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |
 | `validation/eval_fragment.py` | `notes/EXP003_fragment_*.md`: fragmentation-channel MRR per class, time per candidate, agreement with the analog channel |
+| `validation/eval_fp.py` | `notes/EXP_fp_<model>.md`: fingerprint channel alone (f·z, soft-Tanimoto) and with the analog channel per class over the v2 seeds; saves fingerprint features |
 | `validation/eval_pubchem.py` | `notes/EXP011_pubchem_*.md`: recall, candidates, analog C2 cost and the Class 2b (PubChem-only) break-even, old vs PubChem pool |
 | `validation/eval_gate.py` | `notes/EXP010_gate_*.md`, `outputs/ranker_v1.json`: library gate / two-stage vs analog only per class over seeds; saves channel features per split |
 | `validation/eval_ranker.py` | `notes/EXP004_ranker_*.md`, `outputs/ranker_v0.json`: ranker-v0 weights tuned on half A, tested on half B |
@@ -177,6 +182,7 @@ python scripts/kaggle_datasets.py pool library index wheels  # first upload (--u
 python scripts/make_kaggle_notebook.py --local-check         # library-only notebook, run locally on the placeholder
 python scripts/make_kaggle_notebook.py --mode combined [--pool pubchem]  # ranker config from outputs/ranker_v1.json
 python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp_ap.json --fp ap  # + fingerprint channel, T4 GPU
+python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp.json --fp casmi  # our fingerprint model
 kaggle kernels push -p kaggle/submission
 kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
     -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"
