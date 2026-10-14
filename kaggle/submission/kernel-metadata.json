@@ -12,7 +12,7 @@
     "enveda-CASMI26-molecule-id-mass-spectra"
   ],
   "dataset_sources": [
-    "red6161/casmi26-pool",
+    "red6161/casmi26-pool-pubchem",
     "red6161/casmi26-library",
     "red6161/casmi26-wheels",
     "metric/rdkit-2026-3-3-wheel",

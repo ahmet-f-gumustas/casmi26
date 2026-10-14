@@ -174,7 +174,7 @@ The submission notebook is generated from this repo: `scripts/make_kaggle_notebo
 ```bash
 python scripts/kaggle_datasets.py pool library index wheels  # first upload (--update -m msg for new versions)
 python scripts/make_kaggle_notebook.py --local-check         # library-only notebook, run locally on the placeholder
-python scripts/make_kaggle_notebook.py --mode combined       # ranker v0 with weights from outputs/ranker_v0.json
+python scripts/make_kaggle_notebook.py --mode combined [--pool pubchem]  # ranker config from outputs/ranker_v1.json
 kaggle kernels push -p kaggle/submission
 kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
     -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"
@@ -184,6 +184,7 @@ kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
 |---|---|---|---|
 | library-only v1 | 0.137 | 0.144 (seed0); 0.136 ± 0.007 (3 seeds) | 110 s / 9.4 GB (CPU) |
 | ranker v0 = analog only (p3, K100, mean) | 0.285 | 0.492 (seed0); 0.479 ± 0.012 (3 seeds) | 266 s / 3.9 GB (CPU, 4 workers) |
+| analog only + PubChem pool (2.28M) | 0.258 | 0.424 ± 0.009 (split v2) | 207 s / 5.0 GB (CPU, 4 workers) |
 
 Validation tracks the LB for Class 1 but overestimates Class 2 about twofold: simulated C2 molecules are common
 compounds whose spectra were removed, so close analogs abound, while the hidden C2 structures have no public spectra
