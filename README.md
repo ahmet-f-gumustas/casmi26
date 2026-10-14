@@ -89,7 +89,7 @@ Paths come from `casmi.config`. On Kaggle they point to `/kaggle/input/...` and
 ```
 casmi26/
 ├── data/            # competition data (git-ignored)
-├── external/        # COCONUT, PubChem subset, fingerprint caches (git-ignored)
+├── external/        # COCONUT download, candidate pool (external/pool/), official metric (git-ignored)
 ├── src/casmi/
 │   ├── config.py    # paths (Kaggle vs. local), TOP_K, pinned RDKit version
 │   ├── metric.py    # exact mirror of the official scorer: scorer_key, evaluate, dedup_by_key
@@ -99,6 +99,7 @@ casmi26/
 │   ├── structures.py # cached scorer key + exact mass per train SMILES
 │   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
 │   ├── split.py     # molecule-level validation split, Class 1/2/3 simulation, leakage checks
+│   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── channels/    # candidate scoring: library, analog, fragmentation, fpnet
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
@@ -114,7 +115,9 @@ casmi26/
 | `scripts/check_adducts.py` | `notes/ADDUCTS.md`: adduct coverage, precursor ppm errors, mislabels; caches structure masses |
 | `scripts/eda.py` | `notes/EDA.md`: train/test distributions, shift, isomer pool, submission format |
 | `scripts/clean_train.py` | `outputs/train_clean.parquet` (test-style cleaning, ppm-verified adduct fixes), `outputs/train_rejected.parquet`, `notes/CLEAN.md` |
+| `scripts/build_pool.py` | `external/pool/`: COCONUT ∪ train, deduped by scorer key, mass-sorted `masses.npy`, Morgan-2048 `fps.npy`, `meta.parquet` (~212 MB); `notes/POOL.md` |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
+| `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/make_split.py` | `outputs/splits/{seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
 
 ### Validation split
@@ -154,7 +157,7 @@ evaluate(preds, {"mol1": true_smiles})       # {'mrr@25': ..., 'hits@1': ..., ..
 2. **Do not upload a CSV.** In this code competition you submit a notebook *version*. The downloadable `submission.csv` only covers the placeholder test.
 3. **Keep adduct math in one place.** Every neutral-mass conversion goes through `casmi.chem.ADDUCTS`.
 4. **Avoid leakage.** Never split spectra of the same InChIKey14 across train and validation.
-5. **The candidate pool is mostly isomers.** COCONUT plus train structures give about 712k candidates. A ±10 ppm window returns a median of about 107 candidates, and about 70 % of them share the formula.
+5. **The candidate pool is mostly isomers.** COCONUT (Oct 2026) plus train structures give 714k structures after scorer-key dedup. On validation, a ±10 ppm window (+2 ppm timsTOF offset) returns a median of ~70 candidates (p90 ~200–250), and a median of 71 % of them share the answer's formula.
 6. **Seed noise is about ±0.01.** Do not trust validation gains smaller than that.
 
 ---
@@ -172,5 +175,5 @@ evaluate(preds, {"mol1": true_smiles})       # {'mrr@25': ..., 'hits@1': ..., ..
 
 - Competition: <https://www.kaggle.com/competitions/enveda-CASMI26-molecule-id-mass-spectra>
 - MS2Mol (Enveda): <https://chemrxiv.org/engage/chemrxiv/article-details/648dead54f8b1884b77082da>
-- Data sources: COCONUT (CC BY 4.0), PubChem, MassBank / MoNA / GNPS
+- Data sources: COCONUT (CC0), PubChem, MassBank / MoNA / GNPS
 - Tools: RDKit, matchms, ms_entropy, MIST, SIRIUS / CSI:FingerID
