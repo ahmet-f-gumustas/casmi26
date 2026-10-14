@@ -1,0 +1,23 @@
+casmi26 — third-party material
+
+1. prvsiyan, "Analog Propagation CASMI 2026 baseline" (Kaggle notebook,
+   kaggle.com/code/prvsiyan/analog-propagation-casmi-2026-baseline), Apache License 2.0.
+   - src/casmi/fpmodel.py adapts its FPNet architecture (SinEmb, Block, FPNet) and its
+     input preparation (prep_peaks, peak merging, adduct / instrument vocabularies) so
+     that the published checkpoints below load unchanged.
+   - scripts/fork_prvsiyan.py rebuilds its scored V33 cell, unmodified, as a private kernel.
+
+2. prvsiyan/casmi26-fp-models-v2 (Kaggle dataset; fp_single_s2.pt, fp_merged_m1.pt) and
+   fp_bits.npy from prvsiyan/coconut-casmi26-candidates, Creative Commons
+   Attribution-NonCommercial-ShareAlike 4.0 (CC BY-NC-SA 4.0).
+   Used as attached Kaggle inputs and local downloads under external/ for a leaderboard
+   test of the fingerprint channel. They are not redistributed in this repository or in
+   our datasets, and no adapted checkpoint is published. Their licence is not Apache 2.0:
+   the non-commercial and share-alike terms apply to any further use.
+
+3. prvsiyan/pubchem-npformula-massindex and prvsiyan/pubchem-popularity-counts (Kaggle
+   datasets, CC0 1.0), built from NCBI PubChem (public domain).
+
+4. COCONUT 2.0 natural products (coconut.naturalproducts.net), CC0 1.0.
+
+5. Competition data: Enveda CASMI 2026 (Kaggle), under the competition's data licence.

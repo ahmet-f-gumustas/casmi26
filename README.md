@@ -176,6 +176,7 @@ The submission notebook is generated from this repo: `scripts/make_kaggle_notebo
 python scripts/kaggle_datasets.py pool library index wheels  # first upload (--update -m msg for new versions)
 python scripts/make_kaggle_notebook.py --local-check         # library-only notebook, run locally on the placeholder
 python scripts/make_kaggle_notebook.py --mode combined [--pool pubchem]  # ranker config from outputs/ranker_v1.json
+python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp_ap.json --fp ap  # + fingerprint channel, T4 GPU
 kaggle kernels push -p kaggle/submission
 kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
     -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"
@@ -232,4 +233,5 @@ evaluate(preds, {"mol1": true_smiles})       # {'mrr@25': ..., 'hits@1': ..., ..
 - Competition: <https://www.kaggle.com/competitions/enveda-CASMI26-molecule-id-mass-spectra>
 - MS2Mol (Enveda): <https://chemrxiv.org/engage/chemrxiv/article-details/648dead54f8b1884b77082da>
 - Data sources: COCONUT (CC0), PubChem via `prvsiyan/pubchem-npformula-massindex` (CC0), MassBank / MoNA / GNPS
+- Third-party code and models, with their licences: see `NOTICE` (the prvsiyan fingerprint checkpoints are CC BY-NC-SA 4.0)
 - Tools: RDKit, matchms, ms_entropy, MIST, SIRIUS / CSI:FingerID

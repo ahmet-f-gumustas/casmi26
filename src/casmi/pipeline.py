@@ -226,11 +226,28 @@ def library_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], lib
     return agg, {m: dict(zip(s["key"], s["max"].astype(float))) for m, s in scores.items() if len(s)}
 
 
+def fingerprint_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], smiles_of: Mapping[str, str],
+                       model, workers: int = 1, cache: dict | None = None) -> ChannelScores:
+    """Fingerprint-channel scores; ``model`` has ``logits(spectra) -> z``, ``layout`` and ``bits``."""
+    from casmi.channels.fingerprint import fingerprint_channel
+
+    logits = {}
+    for mol_id, grp in queries.groupby("molecule_id"):
+        if windows.get(mol_id):
+            z = model.logits(grp)
+            if z is not None:
+                logits[mol_id] = z
+    return fingerprint_channel(logits, windows, smiles_of, model.layout, model.bits, workers=workers, cache=cache)
+
+
 def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
                           ranker: Mapping, cfg: PipelineConfig = PipelineConfig(),
                           in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
-                          ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
-    """Channels needed by ``ranker`` (a ranker-v0 weight dict or a ranker-v1 config), then ranking."""
+                          fp_model=None) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
+    """Channels needed by ``ranker`` (a ranker-v0 weight dict or a ranker-v1 config), then ranking.
+
+    ``fp_model`` (see ``fingerprint_scores``) is required when the ranker reads the fingerprint channel.
+    """
     from casmi.ranker import needed_channels, rank_molecule
 
     cfg_r = ranker if "mode" in ranker else {"mode": "weighted", "weights": dict(ranker)}
@@ -246,6 +263,10 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
         channels["analog"] = analog_channel(queries, windows, pool, index, row_key, allowed=allowed, workers=cfg.workers)
     if "fragment" in need:
         channels["fragment"] = fragment_channel(queries, windows, smiles_of, workers=cfg.workers)
+    if "fingerprint" in need:
+        if fp_model is None:
+            raise ValueError("the ranker reads the fingerprint channel but no fp_model was given")
+        channels["fingerprint"] = fingerprint_scores(queries, windows, smiles_of, fp_model, workers=cfg.workers)
     preds = {}
     for mol_id, keys in windows.items():
         per = {c: channels[c].get(mol_id, {}) for c in channels}

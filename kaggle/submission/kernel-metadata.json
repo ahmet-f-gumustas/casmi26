@@ -5,20 +5,23 @@
   "language": "python",
   "kernel_type": "notebook",
   "is_private": true,
-  "enable_gpu": false,
+  "enable_gpu": true,
   "enable_tpu": false,
   "enable_internet": false,
   "competition_sources": [
     "enveda-CASMI26-molecule-id-mass-spectra"
   ],
   "dataset_sources": [
-    "red6161/casmi26-pool-pubchem",
+    "red6161/casmi26-pool",
     "red6161/casmi26-library",
     "red6161/casmi26-wheels",
     "metric/rdkit-2026-3-3-wheel",
-    "red6161/casmi26-analog-index"
+    "red6161/casmi26-analog-index",
+    "prvsiyan/casmi26-fp-models-v2",
+    "prvsiyan/coconut-casmi26-candidates"
   ],
   "kernel_sources": [],
   "model_sources": [],
-  "keywords": []
+  "keywords": [],
+  "machine_shape": "NvidiaTeslaT4"
 }

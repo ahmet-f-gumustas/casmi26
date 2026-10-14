@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 from casmi.config import TOP_K
 
-CHANNELS = ("library", "analog", "fragment")
+CHANNELS = ("library", "analog", "fragment", "fingerprint")
 
 
 def rank_normalise(scores: NDArray[np.float64]) -> NDArray[np.float64]:
