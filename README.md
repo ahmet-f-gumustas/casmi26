@@ -124,6 +124,7 @@ casmi26/
 | `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |
 | `validation/eval_fragment.py` | `notes/EXP003_fragment_*.md`: fragmentation-channel MRR per class, time per candidate, agreement with the analog channel |
 | `validation/eval_ranker.py` | `notes/EXP004_ranker_*.md`, `outputs/ranker_v0.json`: ranker-v0 weights tuned on half A, tested on half B |
+| `validation/seed_noise.py` | `notes/EXP005_seed_noise.md`: library / analog MRR@25 per class across split seeds, mean ± std |
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
 | `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
@@ -199,7 +200,7 @@ evaluate(preds, {"mol1": true_smiles})       # {'mrr@25': ..., 'hits@1': ..., ..
 3. **Keep adduct math in one place.** Every neutral-mass conversion goes through `casmi.chem.ADDUCTS`.
 4. **Avoid leakage.** Never split spectra of the same InChIKey14 across train and validation.
 5. **The candidate pool is mostly isomers.** COCONUT (Oct 2026) plus train structures give 714k structures after scorer-key dedup. On validation, a ±10 ppm window (+2 ppm timsTOF offset) returns a median of ~70 candidates (p90 ~200–250), and a median of 71 % of them share the answer's formula.
-6. **Seed noise is about ±0.01.** Do not trust validation gains smaller than that.
+6. **Seed noise is about ±0.015 on total MRR@25** (measured std over 3 split seeds: 0.007–0.012; per class ±0.04 for C1, ±0.02 for C2). Smaller differences are not measurable.
 
 ---
 
