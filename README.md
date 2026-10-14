@@ -100,7 +100,7 @@ casmi26/
 │   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
 │   ├── split.py     # molecule-level validation split, Class 1/2/3 simulation, leakage checks
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
-│   ├── channels/    # candidate scoring: library, analog, fragmentation, fpnet
+│   ├── channels/    # candidate scoring: library (entropy similarity); analog, fragmentation, fpnet to come
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
 ├── kaggle/          # submission notebooks + kernel-metadata.json
@@ -118,6 +118,7 @@ casmi26/
 | `scripts/build_pool.py` | `external/pool/`: COCONUT ∪ train, deduped by scorer key, mass-sorted `masses.npy`, Morgan-2048 `fps.npy`, `meta.parquet` (~212 MB); `notes/POOL.md` |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
+| `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `validation/make_split.py` | `outputs/splits/{seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
 
 ### Validation split
