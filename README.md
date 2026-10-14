@@ -96,6 +96,7 @@ casmi26/
 │   ├── chem.py      # adduct table, neutral mass ↔ precursor m/z, ppm windows
 │   ├── data.py      # column-wise parquet readers
 │   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
+│   ├── split.py     # molecule-level validation split, Class 1/2/3 simulation, leakage checks
 │   ├── channels/    # candidate scoring: library, analog, fragmentation, fpnet
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
@@ -111,6 +112,20 @@ casmi26/
 | `scripts/check_adducts.py` | `notes/ADDUCTS.md`: adduct coverage, precursor ppm errors, mislabels; caches structure masses |
 | `scripts/eda.py` | `notes/EDA.md`: train/test distributions, shift, isomer pool, submission format |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
+| `validation/make_split.py` | `outputs/splits/seed{N}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
+
+### Validation split
+
+`validation/make_split.py` holds out 2,000 molecules (seeded, deterministic), grouped by **scorer key**,
+not by the train `inchikey14` column, so tautomers can't leak. Query spectra look like the test: timsTOF,
+the test adducts, a clean precursor mass, base peak ≥ 1,000, mass 157–1,159 Da, and spectra per molecule
+plus adduct/CE mix matched to the test. All `enveda-np-examples` molecules are included as the NP proxy.
+
+| Class | Share | Library (`in_library`) | Candidate pool |
+|---|---|---|---|
+| C1 | 16 % | timsTOF spectra removed, other-library references kept | kept |
+| C2 | 45 % | all spectra removed | kept |
+| C3 | 39 % | all spectra removed | **removed** |
 
 ### Quick usage
 
