@@ -124,6 +124,7 @@ casmi26/
 | `scripts/fork_prvsiyan.py` | `outputs/kaggle/prvsiyan_v33_fork/`: prvsiyan's scored V33 cell (Apache 2.0), byte-for-byte, as a private kernel folder |
 | `scripts/analog_difficulty.py` | `notes/ANALOG_DIFFICULTY_<prefix>.md`: Class 2 MRR by nn_tanimoto bin, NP-proxy profile, LB-implied target profile (`outputs/difficulty_profile.json`) |
 | `scripts/build_pool.py --pubchem` | `external/pool_pubchem/`: pool + PubChem rows filtered by NP-likeness / COCONUT scaffold (≤ 3M); `notes/POOL_PUBCHEM.md` |
+| `scripts/error_analysis.py` | `notes/ERROR_ANALYSIS.md`, `outputs/error_analysis_<prefix>.parquet`: Class 2 failures of the analog channel by cluster (near-isomer / retrieval / intermediate), NP subset |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -40,3 +41,12 @@ def read_table(name: str, columns: Sequence[str] | None = None) -> pa.Table:
 def read_frame(name: str, columns: Sequence[str] | None = None) -> pd.DataFrame:
     """Like ``read_table`` but returns a DataFrame."""
     return read_table(name, columns).to_pandas()
+
+
+def mean_ce(v: object, default: float = float("nan")) -> float:
+    """Mean of a list-valued ``collision_energy_ev`` cell; ``default`` when it is missing or empty."""
+    if v is None:
+        return default
+    a = np.atleast_1d(np.asarray(v, dtype=np.float64))
+    a = a[np.isfinite(a)]
+    return float(a.mean()) if len(a) else default

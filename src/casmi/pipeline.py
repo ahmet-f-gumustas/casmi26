@@ -23,7 +23,8 @@ from casmi.candidates import CandidatePool, molecule_masses
 from casmi.channels.library import LibraryConfig, Spectrum, prepare, rank, score_molecule
 from casmi.clean import strip_peaks
 
-QUERY_COLUMNS = ["molecule_id", "ionization_mode", "adduct", "precursor_mz", "ms2_mzs", "ms2_normalized_intensities"]
+QUERY_COLUMNS = ["molecule_id", "ionization_mode", "adduct", "precursor_mz", "ms2_mzs", "ms2_normalized_intensities",
+                 "instrument_type", "collision_energy_ev"]
 LIBRARY_COLUMNS = ["row", "key", "ionization_mode", "precursor_mz", "adduct", "ms2_mzs", "ms2_normalized_intensities"]
 
 
@@ -128,14 +129,12 @@ def _analog_search(i: int) -> tuple[np.ndarray, np.ndarray]:
     return s["index"].search(mode, prec, peaks, s["cfg"], s["allowed"])
 
 
-def analog_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool: CandidatePool, index,
-                   row_key: Mapping[int, str], cfg=None, allowed: np.ndarray | None = None,
-                   workers: int = 1) -> ChannelScores:
-    """Mass-shifted analog propagation scores (see ``casmi.channels.analog``), mean over spectra."""
-    from casmi.channels.analog import AnalogConfig, score_molecule as analog_score
+def analog_hits(queries: pd.DataFrame, index, cfg=None, allowed: np.ndarray | None = None,
+                workers: int = 1) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Top-K analog (library rows, similarities) per query spectrum, in ``queries`` row order."""
+    from casmi.channels.analog import AnalogConfig
 
     cfg = cfg or AnalogConfig()
-    queries = queries.reset_index(drop=True)
     raw = [(m, float(p), np.column_stack([mz, it]).astype(np.float32))
            for m, p, mz, it in zip(queries["ionization_mode"], queries["precursor_mz"], queries["ms2_mzs"],
                                    queries["ms2_normalized_intensities"])]
@@ -146,6 +145,22 @@ def analog_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool
     else:
         hits = [_analog_search(i) for i in range(len(raw))]
     _STATE.clear()
+    return hits
+
+
+def analog_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool: CandidatePool, index,
+                   row_key: Mapping[int, str], cfg=None, allowed: np.ndarray | None = None,
+                   workers: int = 1, hits: list | None = None) -> ChannelScores:
+    """Mass-shifted analog propagation scores (see ``casmi.channels.analog``), mean over spectra.
+
+    ``hits`` (from ``analog_hits`` on the same ``queries``) skips the library search.
+    """
+    from casmi.channels.analog import AnalogConfig, score_molecule as analog_score
+
+    cfg = cfg or AnalogConfig()
+    queries = queries.reset_index(drop=True)
+    if hits is None:
+        hits = analog_hits(queries, index, cfg, allowed, workers)
     fp_row_of_key = dict(zip(pool.meta["key"], range(len(pool.meta))))
     used = {int(r) for rows, _ in hits for r in rows}
     row_fp = {r: fp_row_of_key[row_key[r]] for r in used if row_key.get(r) in fp_row_of_key}
