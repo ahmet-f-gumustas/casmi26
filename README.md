@@ -102,7 +102,7 @@ casmi26/
 │   ├── pipeline.py  # end-to-end ranking shared by validation and the Kaggle notebook
 │   ├── harness.py   # load a split's queries / mask / pool, MRR@25 per class
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
-│   ├── channels/    # candidate scoring: library (entropy similarity); analog, fragmentation, fpnet to come
+│   ├── channels/    # library (entropy similarity), analog (mass-shifted analog propagation)
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
 ├── kaggle/          # generated submission notebook + kernel-metadata.json
@@ -120,6 +120,7 @@ casmi26/
 | `scripts/build_pool.py` | `external/pool/`: COCONUT ∪ train, deduped by scorer key, mass-sorted `masses.npy`, Morgan-2048 `fps.npy`, `meta.parquet` (~212 MB); `notes/POOL.md` |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
+| `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
 | `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
