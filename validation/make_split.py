@@ -16,17 +16,15 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyarrow.compute as pc
 
-from casmi.chem import exact_mass, parse_adduct, ppm_error, precursor_mz
+from casmi.chem import parse_adduct, ppm_error, precursor_mz
 from casmi.config import REPO_ROOT, WORK_DIR
 from casmi.data import read_table
-from casmi.metric import scorer_key
 from casmi.report import md_table
 from casmi.split import (
     NP_EXAMPLES,
@@ -39,25 +37,7 @@ from casmi.split import (
     final_split,
     make_split,
 )
-
-
-def _keys_and_mass(smiles: str) -> tuple[str | None, float | None]:
-    return scorer_key(smiles), exact_mass(smiles)
-
-
-def structure_keys(smiles: pd.Series, workers: int) -> pd.DataFrame:
-    """Scorer key and neutral mass per unique SMILES, cached under WORK_DIR."""
-    cache = WORK_DIR / "structure_keys.parquet"
-    if cache.exists():
-        return pd.read_parquet(cache)
-    uniq = sorted(smiles.dropna().unique().tolist())
-    with Pool(workers) as pool:
-        res = pool.map(_keys_and_mass, uniq, chunksize=200)
-    out = pd.DataFrame({"normalized_smiles": uniq, "key": [k for k, _ in res],
-                        "exact_mass": np.array([m for _, m in res], dtype=np.float64)})
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(cache, index=False)
-    return out
+from casmi.structures import structure_table
 
 
 def load_rows(workers: int) -> pd.DataFrame:
@@ -65,7 +45,7 @@ def load_rows(workers: int) -> pd.DataFrame:
     t = read_table("train", cols)
     rows = t.drop(["collision_energy_ev"]).to_pandas()
     rows["n_ce"] = pc.list_value_length(t.column("collision_energy_ev")).to_numpy(zero_copy_only=False)
-    keys = structure_keys(rows["normalized_smiles"], workers).set_index("normalized_smiles")
+    keys = structure_table(rows["normalized_smiles"].unique(), workers).set_index("normalized_smiles")
     rows = rows.join(keys, on="normalized_smiles")
     rows["ppm"] = np.nan
     for adduct, idx in rows.groupby("adduct").groups.items():

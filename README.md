@@ -95,6 +95,8 @@ casmi26/
 │   ├── metric.py    # exact mirror of the official scorer: scorer_key, evaluate, dedup_by_key
 │   ├── chem.py      # adduct table, neutral mass ↔ precursor m/z, ppm windows
 │   ├── data.py      # column-wise parquet readers
+│   ├── clean.py     # test-style cleaning rules: precursor+2 Da peak cut, base peak, mass verdicts
+│   ├── structures.py # cached scorer key + exact mass per train SMILES
 │   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
 │   ├── split.py     # molecule-level validation split, Class 1/2/3 simulation, leakage checks
 │   ├── channels/    # candidate scoring: library, analog, fragmentation, fpnet
@@ -111,6 +113,7 @@ casmi26/
 |---|---|
 | `scripts/check_adducts.py` | `notes/ADDUCTS.md`: adduct coverage, precursor ppm errors, mislabels; caches structure masses |
 | `scripts/eda.py` | `notes/EDA.md`: train/test distributions, shift, isomer pool, submission format |
+| `scripts/clean_train.py` | `outputs/train_clean.parquet` (test-style cleaning, ppm-verified adduct fixes), `outputs/train_rejected.parquet`, `notes/CLEAN.md` |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/make_split.py` | `outputs/splits/{seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
 
