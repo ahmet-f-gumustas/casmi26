@@ -187,6 +187,7 @@ kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
 | library-only v1 | 0.137 | 0.144 (seed0); 0.136 ± 0.007 (3 seeds) | 110 s / 9.4 GB (CPU) |
 | ranker v0 = analog only (p3, K100, mean) | 0.285 | 0.492 (seed0); 0.479 ± 0.012 (3 seeds) | 266 s / 3.9 GB (CPU, 4 workers) |
 | analog only + PubChem pool (2.28M) | 0.258 | 0.424 ± 0.009 (split v2) | 207 s / 5.0 GB (CPU, 4 workers) |
+| analog + prvsiyan FP checkpoints (rank average, CC BY-NC-SA test) | 0.292 | — (trained on all of train) | 261 s / 4.8 GB (T4 GPU) |
 | reference: prvsiyan V33 public notebook, unchanged private fork | 0.344 | — | 3879 s (T4 GPU) |
 
 Validation tracks the LB for Class 1 but overestimates Class 2 about twofold. Neither analog difficulty
