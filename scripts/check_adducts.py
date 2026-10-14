@@ -23,19 +23,10 @@ import pandas as pd
 from casmi.chem import ADDUCTS, TEST_ADDUCTS, adduct_spec, exact_mass, parse_adduct, ppm_error, precursor_mz
 from casmi.config import REPO_ROOT, WORK_DIR
 from casmi.data import read_frame
+from casmi.report import md_table
 
 C13_SHIFT = 1.0033548378
 LOW_RES_DA = 0.5
-
-
-def md_table(df: pd.DataFrame, floatfmt: str = "{:.3g}") -> str:
-    """Minimal markdown table (no tabulate dependency)."""
-    cols = [str(c) for c in df.columns]
-    lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
-    for row in df.itertuples(index=False):
-        cells = [floatfmt.format(v) if isinstance(v, float) else str(v) for v in row]
-        lines.append("| " + " | ".join(cells) + " |")
-    return "\n".join(lines)
 
 
 def structure_masses(smiles: pd.Series, workers: int) -> pd.DataFrame:

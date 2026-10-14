@@ -24,7 +24,7 @@ energies and adducts), predict up to **25 SMILES**, best guess first.
 | Metric | **MRR@25**, averaged over molecules (not spectra) |
 | Correct hit | Tautomer-canonical **InChIKey14** match under RDKit **2026.03.3**. Stereo and tautomers do not matter |
 | Train | ~2.54M spectra, ~275.8k unique InChIKey14 (`inchikey14` is the group key; there is no `molecule_id`) |
-| Test | ~400 molecules, ~2,500 unpublished spectra |
+| Test | ~400 molecules, ~1,500 unpublished spectra (1–16 per molecule, median 3), all Bruker timsTOF, 10 adducts, neutral mass 157–1,159 Da |
 
 ### Novelty classes
 
@@ -65,6 +65,9 @@ kaggle competitions download -c enveda-CASMI26-molecule-id-mass-spectra -p data
 unzip -q data/*.zip -d data
 ```
 
+> The visible `test.parquet` is a placeholder: its 400 molecules are enveda-180 training spectra. The hidden
+> test replaces it at re-run, so never tune on it. `enveda-np-examples` is the closest public proxy.
+
 Paths come from `casmi.config`. On Kaggle they point to `/kaggle/input/...` and
 `/kaggle/working`. Locally you can override them with `CASMI_DATA`,
 `CASMI_EXTERNAL` and `CASMI_WORK`. The defaults are `data/`, `external/` and
@@ -89,6 +92,13 @@ casmi26/
 ├── scripts/         # EDA and one-off utilities
 └── tests/
 ```
+
+### Scripts
+
+| Script | Output (local, git-ignored) |
+|---|---|
+| `scripts/check_adducts.py` | `notes/ADDUCTS.md`: adduct coverage, precursor ppm errors, mislabels; caches structure masses |
+| `scripts/eda.py` | `notes/EDA.md`: train/test distributions, shift, isomer pool, submission format |
 
 ### Quick usage
 
