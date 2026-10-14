@@ -1,0 +1,32 @@
+import pytest
+
+from casmi.tier import TierConfig, prior, tier_merge, union_scores
+
+
+def test_union_scores_rank_normalise_over_the_union() -> None:
+    keys = ["A", "B", "P"]
+    s = union_scores(keys, {"analog": {"A": 0.9, "B": 0.1, "P": 0.5}, "fingerprint": {"P": 2.0}},
+                     {"analog": 1.0, "fingerprint": 1.0})
+    assert s["A"] == pytest.approx(1.0) and s["B"] == pytest.approx(1 / 3)
+    assert s["P"] == pytest.approx(2 / 3 + 1.0)
+
+
+def test_prior() -> None:
+    cfg = TierConfig(beta=1.0, sid_cap=1000.0)
+    assert prior(0, cfg) == 0.0 and prior(5000, cfg) == 1.0
+    assert 0 < prior(10, cfg) < 1
+    assert prior(0, TierConfig(beta=0.0)) == 1.0
+
+
+def test_tier_merge_gate_and_slots() -> None:
+    main = [f"M{i}" for i in range(30)]
+    common = {m: 1.0 - i / 100 for i, m in enumerate(main)}  # M0 1.00, M2 0.98, ...
+    cfg = TierConfig(n_slots=3, gate_k=3)
+    strong = {"P1": 0.99, "P2": 0.5, "P3": 0.4, "P4": 0.1}
+    assert tier_merge(main, strong, common, cfg) == main[:22] + ["P1", "P2", "P3"]
+    two = {"P1": 0.99, "P2": 0.5}  # fewer PubChem candidates than slots: the main list keeps the rest
+    assert tier_merge(main, two, common, cfg) == main[:23] + ["P1", "P2"]
+    weak = {"P1": 0.97}  # below the 3rd main candidate (0.98)
+    assert tier_merge(main, weak, common, cfg) == main[:25]
+    assert tier_merge(main, {}, common, cfg) == main[:25]
+    assert tier_merge(main[:2], two, common, cfg) == main[:2] + ["P1", "P2"]  # short list: no gate

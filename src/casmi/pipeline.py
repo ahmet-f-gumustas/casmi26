@@ -250,10 +250,14 @@ def fingerprint_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], 
 def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
                           ranker: Mapping, cfg: PipelineConfig = PipelineConfig(),
                           in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
-                          fp_model=None) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
+                          fp_model=None, tier: Mapping | None = None,
+                          ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
     """Channels needed by ``ranker`` (a ranker-v0 weight dict or a ranker-v1 config), then ranking.
 
     ``fp_model`` (see ``fingerprint_scores``) is required when the ranker reads the fingerprint channel.
+    ``tier`` (``casmi.tier.TierConfig`` fields) turns on the PubChem tier: ``pool`` is then the PubChem
+    pool, the ranker sees only its base structures (``in_train`` or ``in_coconut``), and PubChem-only
+    candidates may take the last slots (popularity from ``popularity.parquet`` next to the pool).
     """
     from casmi.ranker import needed_channels, rank_molecule
 
@@ -283,7 +287,30 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
         print(f"fingerprint channel: logits for {len(queries)} spectra / {len(logits)} molecules in {t1 - t0:.1f}s, "
               f"candidates scored in {time.time() - t1:.1f}s", flush=True)
     preds = {}
+    if tier is None:
+        for mol_id, keys in windows.items():
+            per = {c: channels[c].get(mol_id, {}) for c in channels}
+            preds[mol_id] = [smiles_of[k] for k in rank_molecule(keys, per, cfg_r)]
+        return preds, channels
+
+    from casmi.tier import TierConfig, prior, tier_merge, union_scores
+
+    tcfg = TierConfig(**tier)
+    if cfg_r.get("mode", "weighted") != "weighted":
+        raise ValueError("the PubChem tier needs a weighted ranker (its weights give the common scale)")
+    meta = pool.meta
+    base = set(meta.loc[meta["in_train"] | meta["in_coconut"], "key"])
+    pop = pd.read_parquet(pool.path / "popularity.parquet")
+    sid = dict(zip(pop["key"], pop["pc_sid"]))
+    n_used = 0
     for mol_id, keys in windows.items():
         per = {c: channels[c].get(mol_id, {}) for c in channels}
-        preds[mol_id] = [smiles_of[k] for k in rank_molecule(keys, per, cfg_r)]
+        main = rank_molecule([k for k in keys if k in base], per, cfg_r)
+        common = union_scores(keys, per, cfg_r["weights"])
+        pub = {k: common[k] * prior(sid.get(k, 0), tcfg) for k in keys if k not in base}
+        final = tier_merge(main, pub, common, tcfg)
+        n_used += final != main[: len(final)]
+        preds[mol_id] = [smiles_of[k] for k in final]
+    print(f"PubChem tier {tcfg}: used for {n_used} of {len(windows)} molecules", flush=True)
     return preds, channels
+

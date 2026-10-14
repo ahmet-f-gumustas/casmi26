@@ -1,6 +1,6 @@
 """Stage and upload the private Kaggle datasets the submission notebook reads.
 
-- ``red6161/casmi26-pool``: external/pool (masses.npy, fps.npy, meta.parquet)
+- ``red6161/casmi26-pool``: external/pool (masses.npy, fps.npy, meta.parquet, popularity.parquet)
 - ``red6161/casmi26-pool-pubchem``: external/pool_pubchem, fingerprints as compressed ``fps.npz``
 - ``red6161/casmi26-library``: outputs/train_clean.parquet
 - ``red6161/casmi26-analog-index``: outputs/analog_index, flattened (``<mode>__<file>``)
@@ -31,14 +31,15 @@ from casmi.config import WORK_DIR
 OWNER = "red6161"
 STAGE = WORK_DIR / "kaggle" / "datasets"
 DATASETS = {
-    "pool": ("casmi26-pool", [POOL_DIR / "masses.npy", POOL_DIR / "fps.npy", POOL_DIR / "meta.parquet"],
+    "pool": ("casmi26-pool", [POOL_DIR / n for n in ("masses.npy", "fps.npy", "meta.parquet", "popularity.parquet")],
              "Candidate pool for CASMI 2026: COCONUT (Oct 2026, CC0) and training structures, deduped by the "
-             "metric's tautomer-canonical InChIKey14, sorted by neutral mass, with Morgan r2/2048 fingerprints."),
-    "pool_pubchem": ("casmi26-pool-pubchem", [POOL_DIR.with_name("pool_pubchem") / n for n in ("masses.npy", "fps.npy",
-                                                                                              "meta.parquet")],
+             "metric's tautomer-canonical InChIKey14, sorted by neutral mass, with Morgan r2/2048 fingerprints; "
+             "PubChem substance / PubMed counts per key (CC0, prvsiyan/pubchem-popularity-counts)."),
+    "pool_pubchem": ("casmi26-pool-pubchem", [POOL_DIR.with_name("pool_pubchem") / n for n in (
+                         "masses.npy", "fps.npy", "meta.parquet", "popularity.parquet")],
                      "Candidate pool extended with NP-like PubChem structures (CC0 mass index by prvsiyan, filtered by "
                      "RDKit NP-likeness / COCONUT scaffolds), deduped by scorer key, mass-sorted; fingerprints "
-                     "compressed in fps.npz."),
+                     "compressed in fps.npz; PubChem substance / PubMed counts per key (CC0)."),
     "fp": ("casmi26-fp-model", [WORK_DIR / "fp_models" / "submit" / "fp_casmi.pt"],
            "Spectrum-to-fingerprint model (casmi.fpmodel.SpecFormer, casmi6311 bits) trained on the cleaned "
            "competition training spectra; state dict + config, loadable with torch.load(weights_only=True)."),
