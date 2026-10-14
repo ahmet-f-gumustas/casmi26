@@ -185,10 +185,13 @@ kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
 | library-only v1 | 0.137 | 0.144 (seed0); 0.136 ± 0.007 (3 seeds) | 110 s / 9.4 GB (CPU) |
 | ranker v0 = analog only (p3, K100, mean) | 0.285 | 0.492 (seed0); 0.479 ± 0.012 (3 seeds) | 266 s / 3.9 GB (CPU, 4 workers) |
 | analog only + PubChem pool (2.28M) | 0.258 | 0.424 ± 0.009 (split v2) | 207 s / 5.0 GB (CPU, 4 workers) |
+| reference: prvsiyan V33 public notebook, unchanged private fork | 0.344 | — | 3879 s (T4 GPU) |
 
-Validation tracks the LB for Class 1 but overestimates Class 2 about twofold: simulated C2 molecules are common
-compounds whose spectra were removed, so close analogs abound, while the hidden C2 structures have no public spectra
-and may only exist in PubChem (not in this pool).
+Validation tracks the LB for Class 1 but overestimates Class 2 about twofold. Neither analog difficulty
+(nn_tanimoto does not predict analog-channel success; split v2 only brings val C2 from 0.75 to 0.66) nor pool
+coverage (adding 1.57M NP-like PubChem isomers costs 0.027 on the LB, as predicted for no PubChem-only answers)
+explains the gap. The reference notebook runs analog propagation, then a PubChem popularity prior, a forward-model
+isomer check (GPU) and a gated PubChem tier in fixed slots; this pipeline has only the first step so far.
 
 ### Quick usage
 
