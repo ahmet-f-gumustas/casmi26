@@ -115,3 +115,114 @@ def run_library_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
     return predictions(scores, smiles_of, cfg.aggregation), scores
 
+
+# --------------------------------------------------------------------------------------
+# Analog and fragment channels, and the ranker-v0 combination.
+# --------------------------------------------------------------------------------------
+ChannelScores = dict[str, dict[str, float]]  # molecule_id -> {key: score}
+
+
+def _analog_search(i: int) -> tuple[np.ndarray, np.ndarray]:
+    s = _STATE
+    mode, prec, peaks = s["raw"][i]
+    return s["index"].search(mode, prec, peaks, s["cfg"], s["allowed"])
+
+
+def analog_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool: CandidatePool, index,
+                   row_key: Mapping[int, str], cfg=None, allowed: np.ndarray | None = None,
+                   workers: int = 1) -> ChannelScores:
+    """Mass-shifted analog propagation scores (see ``casmi.channels.analog``), mean over spectra."""
+    from casmi.channels.analog import AnalogConfig, score_molecule as analog_score
+
+    cfg = cfg or AnalogConfig()
+    queries = queries.reset_index(drop=True)
+    raw = [(m, float(p), np.column_stack([mz, it]).astype(np.float32))
+           for m, p, mz, it in zip(queries["ionization_mode"], queries["precursor_mz"], queries["ms2_mzs"],
+                                   queries["ms2_normalized_intensities"])]
+    _STATE.update(raw=raw, index=index, cfg=cfg, allowed=allowed)
+    if workers > 1:
+        with Pool(workers) as p:
+            hits = p.map(_analog_search, range(len(raw)), chunksize=4)
+    else:
+        hits = [_analog_search(i) for i in range(len(raw))]
+    _STATE.clear()
+    fp_row_of_key = dict(zip(pool.meta["key"], range(len(pool.meta))))
+    used = {int(r) for rows, _ in hits for r in rows}
+    row_fp = {r: fp_row_of_key[row_key[r]] for r in used if row_key.get(r) in fp_row_of_key}
+    fps = pool.fps
+    out: ChannelScores = {}
+    for mol_id, idx in queries.groupby("molecule_id").indices.items():
+        keys = windows.get(mol_id, [])
+        if not keys:
+            continue
+        cand = fps[[fp_row_of_key[k] for k in keys]]
+        per = analog_score([hits[i] for i in idx], cand, row_fp, fps, (cfg.power,), top_k=cfg.top_k)[cfg.power]
+        out[mol_id] = dict(zip(keys, per.mean(axis=0).tolist()))
+    return out
+
+
+def _fragments(smiles: str):
+    from casmi.channels.fragment import fragment_masses
+
+    return fragment_masses(smiles, _STATE["fcfg"])
+
+
+def fragment_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], smiles_of: Mapping[str, str],
+                     cfg=None, workers: int = 1, cache: dict | None = None) -> ChannelScores:
+    """Explained-intensity scores from 1–2 bond-break fragments, mean over spectra."""
+    from casmi.channels.fragment import FragmentConfig, explained_intensity, ion_masses
+
+    cfg = cfg or FragmentConfig()
+    cache = {} if cache is None else cache
+    todo = sorted({k for ks in windows.values() for k in ks} - set(cache))
+    _STATE.update(fcfg=cfg)
+    if todo:
+        if workers > 1:
+            with Pool(workers) as p:
+                frags = p.map(_fragments, [smiles_of[k] for k in todo], chunksize=50)
+        else:
+            frags = [_fragments(smiles_of[k]) for k in todo]
+        cache.update(zip(todo, frags))
+    _STATE.clear()
+    out: ChannelScores = {}
+    for mol_id, grp in queries.groupby("molecule_id"):
+        keys = windows.get(mol_id, [])
+        specs = to_spectra(grp, LibraryConfig())
+        if not keys or not specs:
+            continue
+        mat = np.array([[explained_intensity(ion_masses(cache[k], mode, cfg), peaks, cfg.tol_da) for k in keys]
+                        for mode, peaks in specs])
+        out[mol_id] = dict(zip(keys, mat.mean(axis=0).tolist()))
+    return out
+
+
+def library_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], library: Path, cfg: PipelineConfig,
+                    in_library: pd.Series | None = None) -> ChannelScores:
+    """Library-channel scores (aggregation from ``cfg``) per molecule."""
+    refs = load_references(library, {k for ks in windows.values() for k in ks}, in_library, cfg.library)
+    scores = library_scores(queries, windows, refs, cfg)
+    return {m: dict(zip(s["key"], s[cfg.aggregation].astype(float))) for m, s in scores.items() if len(s)}
+
+
+def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
+                          weights: Mapping[str, float], cfg: PipelineConfig = PipelineConfig(),
+                          in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
+                          ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
+    """Library + analog + fragment channels combined by ranker v0."""
+    from casmi.ranker import combine, rank as rank_keys
+
+    queries = clean_queries(queries)
+    windows = candidate_windows(queries, pool, cfg)
+    smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
+    channels = {
+        "library": library_channel(queries, windows, library, cfg, in_library) if weights.get("library") else {},
+        "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, workers=cfg.workers)
+        if weights.get("analog") else {},
+        "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers) if weights.get("fragment") else {},
+    }
+    preds = {}
+    for mol_id, keys in windows.items():
+        per_channel = {c: channels[c].get(mol_id, {}) for c in channels}
+        total = combine(keys, per_channel, weights)
+        preds[mol_id] = [smiles_of[k] for k in rank_keys(keys, total, per_channel.get("analog"))]
+    return preds, channels

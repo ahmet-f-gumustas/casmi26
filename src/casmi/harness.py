@@ -12,11 +12,22 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from casmi.candidates import POOL_DIR, CandidatePool
+from casmi.channels.analog import AnalogIndex, library_row_keys
 from casmi.config import WORK_DIR
 from casmi.metric import evaluate
-from casmi.pipeline import QUERY_COLUMNS
+from casmi.pipeline import (
+    QUERY_COLUMNS,
+    PipelineConfig,
+    analog_channel,
+    candidate_windows,
+    clean_queries,
+    fragment_channel,
+    library_channel,
+)
+from casmi.ranker import combine, rank
 
 CLEAN_LIBRARY = WORK_DIR / "train_clean.parquet"
+ANALOG_INDEX = WORK_DIR / "analog_index"
 NOISE = 0.015  # seed noise on total val MRR; smaller differences are "not measurable"
 
 
@@ -58,3 +69,34 @@ def compare(a: float, b: float, noise: float = NOISE) -> str:
     d = b - a
     return f"{d:+.3f} ({'not measurable' if abs(d) <= noise else 'measurable'})"
 
+
+def compute_channels(data: ValData, index_dir: Path = ANALOG_INDEX, channels: Sequence[str] = ("library", "analog", "fragment"),
+                     workers: int = 24) -> tuple[dict[str, list[str]], dict[str, dict]]:
+    """Candidate windows and per-channel scores for every validation molecule (pipeline code path)."""
+    cfg = PipelineConfig(workers=workers)
+    queries = clean_queries(data.queries)
+    windows = candidate_windows(queries, data.pool, cfg)
+    smiles_of = dict(zip(data.pool.meta["key"], data.pool.meta["smiles"]))
+    out: dict[str, dict] = {}
+    if "library" in channels:
+        out["library"] = library_channel(queries, windows, CLEAN_LIBRARY, cfg, data.in_library)
+    if "analog" in channels:
+        allowed = np.zeros(int(data.in_library.index.max()) + 1, dtype=bool)
+        allowed[data.in_library.index.to_numpy()] = data.in_library.to_numpy()
+        row_key = library_row_keys(CLEAN_LIBRARY).to_dict()
+        out["analog"] = analog_channel(queries, windows, data.pool, AnalogIndex.load(index_dir), row_key,
+                                       allowed=allowed, workers=workers)
+    if "fragment" in channels:
+        out["fragment"] = fragment_channel(queries, windows, smiles_of, workers=workers)
+    return windows, out
+
+
+def predict(windows: Mapping[str, list[str]], channels: Mapping[str, dict], weights: Mapping[str, float],
+            smiles_of: Mapping[str, str], ids) -> dict[str, list[str]]:
+    """Ranker-v0 predictions for molecules ``ids`` from precomputed channel scores."""
+    preds = {}
+    for m in ids:
+        keys = windows.get(m, [])
+        per = {c: channels[c].get(m, {}) for c in channels}
+        preds[m] = [smiles_of[k] for k in rank(keys, combine(keys, per, weights), per.get("analog"))]
+    return preds

@@ -2,13 +2,14 @@
 
 - ``red6161/casmi26-pool``: external/pool (masses.npy, fps.npy, meta.parquet)
 - ``red6161/casmi26-library``: outputs/train_clean.parquet
+- ``red6161/casmi26-analog-index``: outputs/analog_index, flattened (``<mode>__<file>``)
 - ``red6161/casmi26-wheels``: ms_entropy wheels for CPython 3.10–3.13 (RDKit comes from
   the public ``metric/rdkit-2026-3-3-wheel`` dataset)
 
 Files are hard-linked into ``outputs/kaggle/datasets/<name>/`` (no copies), then
 ``kaggle datasets create`` (first time) or ``kaggle datasets version`` (``--update``).
 
-    python scripts/kaggle_datasets.py pool library wheels [--update -m "message"]
+    python scripts/kaggle_datasets.py pool library index wheels [--update -m "message"]
 """
 
 from __future__ import annotations
@@ -32,19 +33,32 @@ DATASETS = {
     "library": ("casmi26-library", [WORK_DIR / "train_clean.parquet"],
                 "Competition training spectra cleaned like the test: peaks above precursor + 2 Da removed, base "
                 "peak < 1000 dropped, precursor checked against the labelled structure (|ppm| <= 20)."),
+    "index": ("casmi26-analog-index", [], "Flash entropy search index (ms_entropy 1.5.3) of the cleaned library, one "
+              "per ionization mode, flattened as <mode>__<file>; library row / precursor maps as .npy."),
     "wheels": ("casmi26-wheels", sorted((STAGE / "casmi26-wheels").glob("ms_entropy-*.whl")),
                "Offline wheels: ms_entropy 1.5.3 for CPython 3.10-3.13 (manylinux x86_64)."),
 }
+
+
+def index_files(index_dir: Path = WORK_DIR / "analog_index") -> list[tuple[Path, str]]:
+    """(source, flattened name) pairs: Kaggle datasets cannot hold sub-folders."""
+    out = []
+    for p in sorted(index_dir.rglob("*")):
+        if p.is_file():
+            rel = p.relative_to(index_dir)
+            out.append((p, "__".join(rel.parts)))
+    return out
 
 
 def stage(name: str) -> Path:
     slug, files, description = DATASETS[name]
     folder = STAGE / slug
     folder.mkdir(parents=True, exist_ok=True)
-    if not files:
+    pairs = index_files() if name == "index" else [(f, f.name) for f in files]
+    if not pairs:
         raise SystemExit(f"{name}: no files to upload")
-    for src in files:
-        dst = folder / src.name
+    for src, dst_name in pairs:
+        dst = folder / dst_name
         if dst.resolve() == src.resolve():
             continue
         if dst.exists():

@@ -100,7 +100,8 @@ casmi26/
 │   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
 │   ├── split.py     # molecule-level validation split, Class 1/2/3 simulation, leakage checks
 │   ├── pipeline.py  # end-to-end ranking shared by validation and the Kaggle notebook
-│   ├── harness.py   # load a split's queries / mask / pool, MRR@25 per class
+│   ├── harness.py   # load a split's queries / mask / pool, channel scores, MRR@25 per class
+│   ├── ranker.py    # ranker v0: weighted sum of per-molecule rank-normalised channel scores
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── channels/    # library (entropy similarity), analog (mass-shifted analogs), fragment (bond breaks)
 │   └── generate/    # Class 3: analog editing, de novo generation
@@ -122,6 +123,7 @@ casmi26/
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |
 | `validation/eval_fragment.py` | `notes/EXP003_fragment_*.md`: fragmentation-channel MRR per class, time per candidate, agreement with the analog channel |
+| `validation/eval_ranker.py` | `notes/EXP004_ranker_*.md`, `outputs/ranker_v0.json`: ranker-v0 weights tuned on half A, tested on half B |
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
 | `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
@@ -156,11 +158,13 @@ The submission notebook is generated from this repo: `scripts/make_kaggle_notebo
 | `red6161/casmi26-pool` | candidate pool (`masses.npy`, `fps.npy`, `meta.parquet`, 212 MB) |
 | `red6161/casmi26-library` | cleaned library `train_clean.parquet` (3.4 GB) |
 | `red6161/casmi26-wheels` | ms_entropy 1.5.3 wheels, CPython 3.10–3.13 |
+| `red6161/casmi26-analog-index` | Flash entropy index of the cleaned library (2.8 GB, files flattened as `<mode>__<file>`) |
 | `metric/rdkit-2026-3-3-wheel` (public) | RDKit 2026.3.3 wheels used by the official scorer |
 
 ```bash
-python scripts/kaggle_datasets.py pool library wheels      # first upload (--update -m msg for new versions)
-python scripts/make_kaggle_notebook.py --local-check       # build kaggle/submission/ and run it locally
+python scripts/kaggle_datasets.py pool library index wheels  # first upload (--update -m msg for new versions)
+python scripts/make_kaggle_notebook.py --local-check         # library-only notebook, run locally on the placeholder
+python scripts/make_kaggle_notebook.py --mode combined       # ranker v0 with weights from outputs/ranker_v0.json
 kaggle kernels push -p kaggle/submission
 kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
     -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"
@@ -168,7 +172,12 @@ kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
 
 | Submission | Public LB | Val MRR@25 | Kaggle runtime / peak RSS |
 |---|---|---|---|
-| library-only v1 | 0.137 | 0.144 (seed0) | 110 s / 9.4 GB (CPU) |
+| library-only v1 | 0.137 | 0.144 (seed0); 0.136 ± 0.007 (3 seeds) | 110 s / 9.4 GB (CPU) |
+| ranker v0 = analog only (p3, K100, mean) | 0.285 | 0.492 (seed0); 0.479 ± 0.012 (3 seeds) | 266 s / 3.9 GB (CPU, 4 workers) |
+
+Validation tracks the LB for Class 1 but overestimates Class 2 about twofold: simulated C2 molecules are common
+compounds whose spectra were removed, so close analogs abound, while the hidden C2 structures have no public spectra
+and may only exist in PubChem (not in this pool).
 
 ### Quick usage
 
