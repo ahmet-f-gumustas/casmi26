@@ -1,0 +1,117 @@
+"""End-to-end ranking pipeline shared by local validation and the Kaggle notebook.
+
+queries (one row per spectrum, with ``molecule_id``) → neutral mass per molecule →
+candidate structures from the pool's ppm window → channel scores → top-25 SMILES.
+Validation passes its split's queries, library mask and Class-3 exclusions; the
+Kaggle notebook passes ``test.parquet`` and the full cleaned library.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from multiprocessing import Pool
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pyarrow.compute as pc
+import pyarrow.dataset as ds
+
+from casmi.candidates import CandidatePool, molecule_masses
+from casmi.channels.library import LibraryConfig, Spectrum, prepare, rank, score_molecule
+from casmi.clean import strip_peaks
+
+QUERY_COLUMNS = ["molecule_id", "ionization_mode", "adduct", "precursor_mz", "ms2_mzs", "ms2_normalized_intensities"]
+LIBRARY_COLUMNS = ["row", "key", "ionization_mode", "precursor_mz", "adduct", "ms2_mzs", "ms2_normalized_intensities"]
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    ppm: float = 10.0
+    offset_ppm: float = 2.0
+    aggregation: str = "mean"
+    workers: int = max(1, len(os.sched_getaffinity(0)))  # CPUs this process may use (container-aware)
+    library: LibraryConfig = LibraryConfig()
+
+
+def clean_queries(queries: pd.DataFrame) -> pd.DataFrame:
+    """Apply the test-side peak rule (drop peaks above precursor + 2 Da) to query spectra."""
+    lengths = queries["ms2_mzs"].map(len).to_numpy()
+    offsets = np.concatenate([[0], np.cumsum(lengths)])
+    mz = np.concatenate([np.asarray(a, dtype=np.float64) for a in queries["ms2_mzs"]]) if lengths.sum() else np.zeros(0)
+    it = (np.concatenate([np.asarray(a, dtype=np.float64) for a in queries["ms2_normalized_intensities"]])
+          if lengths.sum() else np.zeros(0))
+    new_off, new_mz, new_it, _ = strip_peaks(offsets, mz, it, queries["precursor_mz"].to_numpy(np.float64))
+    out = queries.copy()
+    out["ms2_mzs"] = [new_mz[a:b] for a, b in zip(new_off[:-1], new_off[1:])]
+    out["ms2_normalized_intensities"] = [new_it[a:b] for a, b in zip(new_off[:-1], new_off[1:])]
+    return out
+
+
+def to_spectra(df: pd.DataFrame, cfg: LibraryConfig) -> list[Spectrum]:
+    return [(mode, prepare(np.asarray(mz), np.asarray(it), prec, cfg))
+            for mode, mz, it, prec in zip(df["ionization_mode"], df["ms2_mzs"], df["ms2_normalized_intensities"],
+                                          df["precursor_mz"])]
+
+
+def candidate_windows(queries: pd.DataFrame, pool: CandidatePool, cfg: PipelineConfig) -> dict[str, list[str]]:
+    """Scorer keys of the pool structures in each molecule's mass window."""
+    keys = pool.meta["key"].to_numpy()
+    masses = molecule_masses(queries)
+    return {m: keys[pool.window(masses[m], cfg.ppm, cfg.offset_ppm)].tolist() for m in masses.index}
+
+
+def load_references(library: Path, keys: Iterable[str], in_library: pd.Series | None = None,
+                    cfg: LibraryConfig = LibraryConfig()) -> dict[str, list[Spectrum]]:
+    """Prepared reference spectra per scorer key from the cleaned library parquet.
+
+    ``in_library`` (indexed by train ``row``) restricts the library to a split's mask.
+    """
+    table = ds.dataset(library).to_table(columns=LIBRARY_COLUMNS, filter=pc.field("key").isin(list(set(keys))))
+    lib = table.to_pandas()
+    if in_library is not None:
+        lib = lib[lib["row"].map(in_library).fillna(False).to_numpy(dtype=bool)]
+    return {key: to_spectra(grp, cfg) for key, grp in lib.groupby("key")}
+
+
+# Worker state, inherited through fork.
+_STATE: dict = {}
+
+
+def _score(mol_id: str) -> tuple[str, pd.DataFrame]:
+    s = _STATE
+    return mol_id, score_molecule(s["queries"].get(mol_id, []), s["windows"].get(mol_id, []), s["refs"], s["cfg"])
+
+
+def library_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], refs: Mapping[str, list[Spectrum]],
+                   cfg: PipelineConfig) -> dict[str, pd.DataFrame]:
+    """Library-channel score table per molecule."""
+    _STATE.update(queries={m: to_spectra(g, cfg.library) for m, g in queries.groupby("molecule_id")},
+                  windows=windows, refs=refs, cfg=cfg.library)
+    ids = list(windows)
+    if cfg.workers > 1:
+        with Pool(cfg.workers) as pool:
+            out = dict(pool.map(_score, ids, chunksize=1))
+    else:
+        out = dict(map(_score, ids))
+    _STATE.clear()
+    return out
+
+
+def predictions(scores: Mapping[str, pd.DataFrame], smiles_of: Mapping[str, str], by: str = "mean") -> dict[str, list[str]]:
+    """Top-25 SMILES per molecule from its score table."""
+    return {m: [smiles_of[k] for k in rank(s, by)] for m, s in scores.items()}
+
+
+def run_library_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, cfg: PipelineConfig = PipelineConfig(),
+                         in_library: pd.Series | None = None) -> tuple[dict[str, list[str]], dict[str, pd.DataFrame]]:
+    """Library-only pipeline: returns ``(predictions, score tables)``."""
+    queries = clean_queries(queries)
+    windows = candidate_windows(queries, pool, cfg)
+    refs = load_references(library, {k for ks in windows.values() for k in ks}, in_library, cfg.library)
+    scores = library_scores(queries, windows, refs, cfg)
+    smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
+    return predictions(scores, smiles_of, cfg.aggregation), scores
+

@@ -1,0 +1,23 @@
+{
+  "id": "red6161/casmi26-submission",
+  "title": "casmi26 submission",
+  "code_file": "casmi26-submission.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "dataset_sources": [
+    "red6161/casmi26-pool",
+    "red6161/casmi26-library",
+    "red6161/casmi26-wheels",
+    "metric/rdkit-2026-3-3-wheel"
+  ],
+  "competition_sources": [
+    "enveda-CASMI26-molecule-id-mass-spectra"
+  ],
+  "kernel_sources": [],
+  "model_sources": [],
+  "keywords": []
+}

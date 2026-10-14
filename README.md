@@ -99,11 +99,13 @@ casmi26/
 │   ├── structures.py # cached scorer key + exact mass per train SMILES
 │   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
 │   ├── split.py     # molecule-level validation split, Class 1/2/3 simulation, leakage checks
+│   ├── pipeline.py  # end-to-end ranking shared by validation and the Kaggle notebook
+│   ├── harness.py   # load a split's queries / mask / pool, MRR@25 per class
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── channels/    # candidate scoring: library (entropy similarity); analog, fragmentation, fpnet to come
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
-├── kaggle/          # submission notebooks + kernel-metadata.json
+├── kaggle/          # generated submission notebook + kernel-metadata.json
 ├── scripts/         # EDA and one-off utilities
 └── tests/
 ```
@@ -119,6 +121,8 @@ casmi26/
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
+| `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
+| `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
 | `validation/make_split.py` | `outputs/splits/{seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
 
 ### Validation split
@@ -138,6 +142,31 @@ describes it (timsTOF, the 10 test adducts, 157–1,159 Da), with the chemistry,
 | C1 | 16 % | timsTOF spectra removed, other-library references kept | kept |
 | C2 | 45 % | all spectra removed | kept |
 | C3 | 39 % | all spectra removed | **removed** |
+
+## Kaggle
+
+The submission notebook is generated from this repo: `scripts/make_kaggle_notebook.py` embeds `src/casmi`
+(base64 tar.gz), installs RDKit / ms_entropy from wheel datasets and finds its inputs by file name
+(Kaggle mounts datasets under `/kaggle/input/datasets/<owner>/<slug>/` and runs Python 3.13).
+
+| Dataset (private unless noted) | Content |
+|---|---|
+| `red6161/casmi26-pool` | candidate pool (`masses.npy`, `fps.npy`, `meta.parquet`, 212 MB) |
+| `red6161/casmi26-library` | cleaned library `train_clean.parquet` (3.4 GB) |
+| `red6161/casmi26-wheels` | ms_entropy 1.5.3 wheels, CPython 3.10–3.13 |
+| `metric/rdkit-2026-3-3-wheel` (public) | RDKit 2026.3.3 wheels used by the official scorer |
+
+```bash
+python scripts/kaggle_datasets.py pool library wheels      # first upload (--update -m msg for new versions)
+python scripts/make_kaggle_notebook.py --local-check       # build kaggle/submission/ and run it locally
+kaggle kernels push -p kaggle/submission
+kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
+    -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"
+```
+
+| Submission | Public LB | Val MRR@25 | Kaggle runtime / peak RSS |
+|---|---|---|---|
+| library-only v1 | 0.137 | 0.144 (seed0) | 110 s / 9.4 GB (CPU) |
 
 ### Quick usage
 

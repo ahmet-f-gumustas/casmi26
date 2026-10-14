@@ -17,6 +17,7 @@ runs/
 *.ckpt
 *.safetensors
 submission*.csv
+kaggle/submission/*.ipynb
 
 # --- Secrets ---
 kaggle.json
