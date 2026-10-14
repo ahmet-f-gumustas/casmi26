@@ -100,3 +100,22 @@ def predict(windows: Mapping[str, list[str]], channels: Mapping[str, dict], weig
         per = {c: channels[c].get(m, {}) for c in channels}
         preds[m] = [smiles_of[k] for k in rank(keys, combine(keys, per, weights), per.get("analog"))]
     return preds
+
+
+def reciprocal_ranks(windows: Mapping[str, list[str]], channels: Mapping[str, dict], weights: Mapping[str, float],
+                     val: pd.DataFrame) -> pd.Series:
+    """Per-molecule reciprocal rank of the answer's scorer key (pool keys are unique, so this equals the metric)."""
+    rr = {}
+    for m, truth in zip(val["molecule_id"], val["inchikey14"]):
+        keys = windows.get(m, [])
+        per = {c: channels[c].get(m, {}) for c in channels}
+        ranked = rank(keys, combine(keys, per, weights), per.get("analog"))
+        rr[m] = 1.0 / (ranked.index(truth) + 1) if truth in ranked else 0.0
+    return pd.Series(rr, name="rr")
+
+
+def library_keys(in_library: pd.Series) -> set[str]:
+    """Scorer keys with at least one spectrum in the (masked) cleaned library."""
+    row_key = library_row_keys(CLEAN_LIBRARY)
+    rows = in_library.index[in_library.to_numpy()]
+    return set(row_key.reindex(rows).dropna())

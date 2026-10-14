@@ -102,6 +102,7 @@ casmi26/
 │   ├── pipeline.py  # end-to-end ranking shared by validation and the Kaggle notebook
 │   ├── harness.py   # load a split's queries / mask / pool, channel scores, MRR@25 per class
 │   ├── ranker.py    # ranker v0: weighted sum of per-molecule rank-normalised channel scores
+│   ├── difficulty.py # nn_tanimoto / analog counts (blocked matmul), difficulty bins, profile tilt
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── channels/    # library (entropy similarity), analog (mass-shifted analogs), fragment (bond breaks)
 │   └── generate/    # Class 3: analog editing, de novo generation
@@ -120,6 +121,7 @@ casmi26/
 | `scripts/clean_train.py` | `outputs/train_clean.parquet` (test-style cleaning, ppm-verified adduct fixes), `outputs/train_rejected.parquet`, `notes/CLEAN.md` |
 | `scripts/build_pool.py` | `external/pool/`: COCONUT ∪ train, deduped by scorer key, mass-sorted `masses.npy`, Morgan-2048 `fps.npy`, `meta.parquet` (~212 MB); `notes/POOL.md` |
 | `scripts/fork_prvsiyan.py` | `outputs/kaggle/prvsiyan_v33_fork/`: prvsiyan's scored V33 cell (Apache 2.0), byte-for-byte, as a private kernel folder |
+| `scripts/analog_difficulty.py` | `notes/ANALOG_DIFFICULTY_<prefix>.md`: Class 2 MRR by nn_tanimoto bin, NP-proxy profile, LB-implied target profile (`outputs/difficulty_profile.json`) |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |
