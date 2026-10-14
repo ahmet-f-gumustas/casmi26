@@ -52,8 +52,17 @@ uv pip install -e ".[ml]"         # torch, matchms, ms_entropy
 pytest -q
 ```
 
+The official scorer is the Kaggle notebook [`metric/casmi-mean-reciprocal-rank`](https://www.kaggle.com/code/metric/casmi-mean-reciprocal-rank).
+`casmi.metric` mirrors it exactly. Pull it once to enable the comparison test and script:
+
+```bash
+kaggle kernels pull metric/casmi-mean-reciprocal-rank -p external/official_metric
+```
+
 > **Pin RDKit.** Tautomer canonicalization changes between RDKit releases.
-> Naive InChIKey14 slicing disagrees with the scorer key on about 10 % of COCONUT.
+> The scorer strips stereo, canonicalizes the tautomer, then takes InChIKey14. A naive
+> `InChIKey[:14]` (and the train `inchikey14` column) disagrees with it on ~1.7 % of train structures.
+> On Kaggle, install the wheel from the `metric/rdkit-2026-3-3-wheel` dataset.
 
 ### Data
 
@@ -83,8 +92,10 @@ casmi26/
 ├── external/        # COCONUT, PubChem subset, fingerprint caches (git-ignored)
 ├── src/casmi/
 │   ├── config.py    # paths (Kaggle vs. local), TOP_K, pinned RDKit version
-│   ├── metric.py    # scorer_key, reciprocal_rank, evaluate, dedup_by_key
+│   ├── metric.py    # exact mirror of the official scorer: scorer_key, evaluate, dedup_by_key
 │   ├── chem.py      # adduct table, neutral mass ↔ precursor m/z, ppm windows
+│   ├── data.py      # column-wise parquet readers
+│   ├── submit.py    # submission.csv builder + validation (scorer's rejection rules)
 │   ├── channels/    # candidate scoring: library, analog, fragmentation, fpnet
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
@@ -99,6 +110,7 @@ casmi26/
 |---|---|
 | `scripts/check_adducts.py` | `notes/ADDUCTS.md`: adduct coverage, precursor ppm errors, mislabels; caches structure masses |
 | `scripts/eda.py` | `notes/EDA.md`: train/test distributions, shift, isomer pool, submission format |
+| `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 
 ### Quick usage
 

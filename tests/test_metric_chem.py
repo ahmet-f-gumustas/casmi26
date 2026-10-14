@@ -16,7 +16,7 @@ from casmi.chem import (
     parse_adduct,
     precursor_mz,
 )
-from casmi.metric import dedup_by_key, evaluate, scorer_key
+from casmi.metric import dedup_by_key, evaluate, scorer_key, split_guesses
 
 ETHANOL = "CCO"
 CAFFEINE = "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
@@ -42,11 +42,60 @@ def test_raw_rank_is_preserved() -> None:
     assert res["median_rank"] == 3.0
 
 
-def test_answer_beyond_top_k_scores_zero() -> None:
-    preds = [ETHANOL] * 25 + [CAFFEINE]
-    res = evaluate({"m": preds}, {"m": CAFFEINE})
+def test_rank_25_is_last_scoring_slot() -> None:
+    res = evaluate({"m": [ETHANOL] * 24 + [CAFFEINE]}, {"m": CAFFEINE})
+    assert res["mrr@25"] == pytest.approx(1 / 25)
+
+
+def test_more_than_k_guesses_is_rejected() -> None:
+    with pytest.raises(ValueError, match="At most 25"):
+        evaluate({"m": [ETHANOL] * 25 + [CAFFEINE]}, {"m": CAFFEINE})
+
+
+def test_missing_prediction_scores_zero() -> None:
+    res = evaluate({}, {"m": CAFFEINE})
     assert res["mrr@25"] == 0.0
     assert res["missing_frac"] == 1.0
+
+
+# Cases from the official metric notebook's doctests.
+def test_official_doctest_mrr() -> None:
+    truth = {"m_1": "CCO", "m_2": "c1ccccc1"}
+    assert evaluate({"m_1": "CCO;CC(=O)O", "m_2": "CC(=O)O;c1ccccc1"}, truth)["mrr@25"] == 0.75
+    assert evaluate({"m_1": "CC(=O)O", "m_2": "c1ccccc1;c1ccccc1;c1ccccc1"}, truth)["mrr@25"] == 0.5
+
+
+@pytest.mark.parametrize(
+    ("answer", "guess"),
+    [
+        ("C[C@H](N)C(=O)O", "CC(N)C(=O)O"),
+        # stereocentre pins the enone; only matches when stereo is stripped before canonicalization
+        ("C=C(C)C1CCC2CCC(=O)C=C2C1", "C=C(C)[C@@H]1CCC2CCC(=O)C=C2C1"),
+        ("OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O", "OCC1OC(O)C(O)C(O)C1O"),
+    ],
+)
+def test_stereo_is_free(answer: str, guess: str) -> None:
+    assert evaluate({"m": [guess]}, {"m": answer})["mrr@25"] == 1.0
+
+
+def test_glucose_key() -> None:
+    assert scorer_key("OCC1OC(O)C(O)C(O)C1O") == "WQZGKKKJIJFFOK"
+
+
+def test_empty_guesses_are_dropped_before_ranking() -> None:
+    assert split_guesses(" CCO ;; ;c1ccccc1") == ["CCO", "c1ccccc1"]
+    assert evaluate({"m": ";;" + CAFFEINE}, {"m": CAFFEINE})["mrr@25"] == 1.0
+    # an invalid SMILES still takes its slot
+    assert evaluate({"m": ["xx", CAFFEINE]}, {"m": CAFFEINE})["mrr@25"] == 0.5
+
+
+def test_answer_may_list_alternatives() -> None:
+    assert evaluate({"m": ["c1ccccc1"]}, {"m": "CCO,c1ccccc1"})["mrr@25"] == 1.0
+
+
+def test_unparseable_answer_raises() -> None:
+    with pytest.raises(ValueError, match="could not be parsed"):
+        evaluate({"m": ["CCO"]}, {"m": "not a molecule"})
 
 
 def test_per_class_mrr() -> None:
