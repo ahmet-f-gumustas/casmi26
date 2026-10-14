@@ -8,6 +8,7 @@ and a summary to ``notes/SPLIT_seed{seed}.md``. Scorer keys and masses per uniqu
 SMILES are cached in ``WORK_DIR/structure_keys.parquet``.
 
     python validation/make_split.py [--seed 0] [--max-drug-share 0.5]
+    python validation/make_split.py --seed 0 --difficulty   # split v2 → splits/v2_seed0
     python validation/make_split.py --final   # submission: nothing leaves the library
 """
 
@@ -38,6 +39,10 @@ from casmi.split import (
     make_split,
 )
 from casmi.structures import structure_table
+from casmi.candidates import CandidatePool
+from casmi.channels.analog import library_row_keys
+from casmi.difficulty import BIN_LABELS, library_nn
+from casmi.harness import CLEAN_LIBRARY
 
 
 def load_rows(workers: int) -> pd.DataFrame:
@@ -54,6 +59,17 @@ def load_rows(workers: int) -> pd.DataFrame:
         sub = rows.loc[idx]
         rows.loc[idx, "ppm"] = ppm_error(sub["precursor_mz"].to_numpy(), precursor_mz(sub["exact_mass"].to_numpy(), adduct))
     return rows
+
+
+def nn_table(rows: pd.DataFrame, cfg: SplitConfig, workers: int) -> pd.Series:
+    """nn_tanimoto per eligible molecule vs the full cleaned library minus itself (cached)."""
+    pool = CandidatePool.load()
+    keys = sorted(set(rows.loc[eligible_queries(rows, cfg), "key"]))
+    lib = sorted(set(library_row_keys(CLEAN_LIBRARY).dropna()))
+    key_row = dict(zip(pool.meta["key"], range(len(pool.meta))))
+    df = library_nn(keys, pool.fps, pool.meta["exact_mass"].to_numpy(), key_row, lib,
+                    cache=WORK_DIR / "nn_tanimoto_train.parquet", chunk=2000)
+    return df.set_index("key")["nn_tanimoto"]
 
 
 def summary(rows: pd.DataFrame, split: Split, cfg: SplitConfig) -> str:
@@ -85,6 +101,14 @@ def summary(rows: pd.DataFrame, split: Split, cfg: SplitConfig) -> str:
         {"group": "hidden test (host)", "min": 1, "50%": 3, "max": 16},
     ])
     classes = val.groupby(["class", "source"]).size().unstack(fill_value=0).reset_index()
+    c2_bins = None
+    if "nn_tanimoto" in val.columns and cfg.c2_profile is not None:
+        c2 = val[val["class"] == 2]
+        b = pd.cut(c2["nn_tanimoto"], cfg.nn_edges, right=False, labels=BIN_LABELS)
+        c2_bins = pd.crosstab(b, c2["source"]).reindex(BIN_LABELS, fill_value=0)
+        c2_bins["share"] = c2_bins.sum(axis=1) / len(c2)
+        c2_bins["target"] = cfg.c2_profile
+        c2_bins = c2_bins.reset_index(names="nn_tanimoto")
     removed = int((~mask["in_library"]).sum())
     el = rows[eligible_queries(rows, cfg)].groupby(["key", "ingest_lib"])["exact_mass"].median().reset_index()
     bins = pd.cut(el["exact_mass"], cfg.mass_bins, include_lowest=True)
@@ -102,6 +126,7 @@ def summary(rows: pd.DataFrame, split: Split, cfg: SplitConfig) -> str:
         "### Eligible molecules per mass bin (enveda-180 has nothing above 600 Da)", md_table(avail),
         "### Adduct share (spectra)", md_table(shares(q["adduct"], proxy["adduct"], "adduct")),
         "### CE pattern share", md_table(shares(ce_pattern(q["n_ce"]), ce_pattern(proxy["n_ce"]), "ce_pattern")),
+        *(["### Class 2 by nn_tanimoto bin (split v2)", md_table(c2_bins)] if c2_bins is not None else []),
         "### Spectra per molecule",
         md_table(spm.map(lambda v: f"{v:.2g}" if isinstance(v, float) and v == v else ("" if v != v else str(v)))),
         "> Leakage checks passed: no query or C2/C3 spectrum in the library, C1 keeps only non-timsTOF "
@@ -115,18 +140,24 @@ def main() -> None:
     ap.add_argument("--max-drug-share", type=float, default=0.5, help="cap on enveda-180 molecules in val")
     ap.add_argument("--shares", type=float, nargs=3, default=(0.16, 0.45, 0.39), metavar=("C1", "C2", "C3"))
     ap.add_argument("--final", action="store_true", help="no validation: every spectrum stays in the library")
+    ap.add_argument("--difficulty", action="store_true", help="split v2: Class 2 stratified by nn_tanimoto")
+    ap.add_argument("--c2-profile", type=float, nargs=4, default=(0.0, 0.5, 0.35, 0.15),
+                    metavar=("B0_03", "B03_05", "B05_07", "B07_1"), help="split v2 Class 2 share per nn bin")
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--out-dir", type=Path, default=None)
     args = ap.parse_args()
 
-    cfg = SplitConfig(max_drug_share=args.max_drug_share, seed=args.seed, class_shares=tuple(args.shares))
-    out_dir = args.out_dir or WORK_DIR / "splits" / ("final" if args.final else f"seed{cfg.seed}")
+    cfg = SplitConfig(max_drug_share=args.max_drug_share, seed=args.seed, class_shares=tuple(args.shares),
+                      c2_profile=tuple(args.c2_profile) if args.difficulty else None)
+    name = "final" if args.final else (f"v2_seed{cfg.seed}" if args.difficulty else f"seed{cfg.seed}")
+    out_dir = args.out_dir or WORK_DIR / "splits" / name
     rows = load_rows(args.workers)
     if args.final:
         split = final_split(len(rows))
         report = f"# Final split\n\n- {len(rows):,} train spectra, all in the library; no validation molecules\n"
     else:
-        split = make_split(rows, cfg)
+        nn = nn_table(rows, cfg, args.workers) if args.difficulty else None
+        split = make_split(rows, cfg, nn)
         check_leakage(rows, split, candidate_pool_keys(rows["key"].dropna(), split))
         report = summary(rows, split, cfg)
 

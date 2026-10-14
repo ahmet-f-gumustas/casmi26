@@ -37,6 +37,7 @@ DRUG_LIB = "enveda-180"
 ROW_COLUMNS = ("ingest_lib", "key", "normalized_smiles", "adduct", "ppm", "base_peak_intensity", "n_ce",
                "exact_mass")
 VAL_COLUMNS = ["molecule_id", "inchikey14", "class", "smiles", "source", "exact_mass", "n_query"]
+V2_COLUMNS = [*VAL_COLUMNS, "nn_tanimoto"]
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,9 @@ class SplitConfig:
     mass_bins: tuple[float, ...] = (157.0, 250.0, 350.0, 450.0, 600.0, 800.0, 1159.0)
     max_spectra: int = 16  # hidden test has 1–16 spectra per molecule
     smoothing: float = 0.01  # added to shares in importance weights and bin targets
+    # Split v2: Class 2 sampled to this share per nn_tanimoto bin (``nn_edges``); None = split v1.
+    c2_profile: tuple[float, ...] | None = None
+    nn_edges: tuple[float, ...] = (0.0, 0.3, 0.5, 0.7, 1.0001)
 
 
 @dataclass(frozen=True)
@@ -120,9 +124,12 @@ def eligible_queries(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> np
     )
 
 
-def make_split(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> Split:
+def make_split(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig(), nn: pd.Series | None = None) -> Split:
     """Build the split. ``rows`` is one row per train spectrum, in train order, with
-    ``ROW_COLUMNS`` (``key`` = scorer key, ``ppm`` = precursor error vs the labelled structure)."""
+    ``ROW_COLUMNS`` (``key`` = scorer key, ``ppm`` = precursor error vs the labelled structure).
+
+    With ``cfg.c2_profile`` (split v2), ``nn`` maps scorer key → nn_tanimoto (nearest library
+    structure) and Class 2 is drawn to match the profile over ``cfg.nn_edges`` bins."""
     missing = set(ROW_COLUMNS) - set(rows.columns)
     if missing:
         raise ValueError(f"rows is missing columns {sorted(missing)}")
@@ -170,8 +177,31 @@ def make_split(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> Split:
     np_rest = [i for i in np_idx if i not in set(np_c1)]
     k3 = round(s3 * n_np)
     cls.loc[np_c1] = 1
-    cls.loc[np_rest[:k3]] = 3
-    cls.loc[np_rest[k3:]] = 2
+    if cfg.c2_profile is None:
+        cls.loc[np_rest[:k3]] = 3
+        cls.loc[np_rest[k3:]] = 2
+    else:
+        if nn is None:
+            raise ValueError("split v2 (c2_profile) needs nn_tanimoto per key")
+        nn_edges = np.asarray(cfg.nn_edges)
+        mol["nn_bin"] = np.where(mol["key"].map(nn).notna(), np.clip(
+            np.searchsorted(nn_edges, mol["key"].map(nn).fillna(0).to_numpy(), side="right") - 1, 0, len(nn_edges) - 2),
+            -1)
+        c2_quota = _bin_quotas(np.full(len(nn_edges) - 1, n2), np.asarray(cfg.c2_profile, dtype=float), n2)
+        # NP molecules fill Class 2 within the per-bin quotas (up to their usual share); the rest go to C3.
+        taken = np.zeros_like(c2_quota)
+        np_c2: list[int] = []
+        for i in np_rest:
+            b = mol.at[i, "nn_bin"]
+            if b >= 0 and taken[b] < c2_quota[b] and len(np_c2) < len(np_rest) - k3:
+                np_c2.append(i)
+                taken[b] += 1
+        np_c3 = [i for i in np_rest if i not in set(np_c2)]
+        overflow = max(0, len(np_c3) - n3)  # never exceed the C3 quota with NP molecules alone
+        np_c2 += np_c3[:overflow]
+        np_c3 = np_c3[overflow:]
+        cls.loc[np_c2] = 2
+        cls.loc[np_c3] = 3
 
     # enveda-180 fills the remaining quotas, mass-stratified towards the NP mass distribution.
     drug = mol.index[~mol["is_np"]].to_numpy()
@@ -185,9 +215,23 @@ def make_split(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> Split:
     c1_pool = drug[mol.loc[drug, "c1_eligible"].to_numpy()]
     cls.loc[draw(c1_pool, n1 - int((cls == 1).sum()), "C1-eligible enveda-180")] = 1
     need2, need3 = n2 - int((cls == 2).sum()), n3 - int((cls == 3).sum())
-    c23 = rng.permutation(draw(drug[(cls.loc[drug] == 0).to_numpy()], need2 + need3, "enveda-180"))
-    cls.loc[c23[:need3]] = 3
-    cls.loc[c23[need3:]] = 2
+    if cfg.c2_profile is None:
+        c23 = rng.permutation(draw(drug[(cls.loc[drug] == 0).to_numpy()], need2 + need3, "enveda-180"))
+        cls.loc[c23[:need3]] = 3
+        cls.loc[c23[need3:]] = 2
+    else:
+        # enveda-180 Class 2: per-nn-bin deficits, weighted draws inside each bin.
+        nb = len(cfg.nn_edges) - 1
+        have = np.bincount(mol.loc[cls == 2, "nn_bin"].clip(lower=0), minlength=nb)
+        deficit = np.clip(c2_quota - have, 0, None).astype(float)
+        free = drug[((cls.loc[drug] == 0) & (mol.loc[drug, "nn_bin"] >= 0)).to_numpy()]
+        target = deficit / deficit.sum() if deficit.sum() > 0 else np.full(nb, 1.0 / nb)
+        if need2 < 0:
+            raise ValueError("NP examples already exceed the C2 quota")
+        c2 = _stratified_draw(rng, free, mol.loc[free, "nn_bin"].to_numpy(), mol.loc[free, "weight"].to_numpy(),
+                              target, need2, "enveda-180 C2")
+        cls.loc[c2] = 2
+        cls.loc[draw(drug[(cls.loc[drug] == 0).to_numpy()], need3, "enveda-180")] = 3
     val = mol[cls > 0].assign(**{"class": cls[cls > 0].to_numpy()}).reset_index(drop=True)
     val["molecule_id"] = [f"v_{i:05d}" for i in range(len(val))]
 
@@ -212,7 +256,8 @@ def make_split(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> Split:
     in_library[(key.isin(set(val.loc[val["class"] == 1, "key"])).to_numpy()) & ~is_tims] = True
 
     val["source"] = np.where(val["is_np"], NP_EXAMPLES, DRUG_LIB)
-    val = val.rename(columns={"key": "inchikey14"})[VAL_COLUMNS]
+    val["nn_tanimoto"] = val["key"].map(nn).to_numpy() if nn is not None else np.nan
+    val = val.rename(columns={"key": "inchikey14"})[V2_COLUMNS if nn is not None else VAL_COLUMNS]
     mask = pd.DataFrame({"row": np.arange(len(rows)), "in_library": in_library, "query_molecule_id": query_mol})
     return Split(val=val, library_mask=mask)
 

@@ -113,3 +113,22 @@ def test_final_split_keeps_everything(rows: pd.DataFrame) -> None:
     final = final_split(len(rows))
     assert final.library_mask["in_library"].all() and final.library_mask["query_molecule_id"].isna().all()
     assert final.val.empty and list(final.val.columns)[:3] == ["molecule_id", "inchikey14", "class"]
+
+
+def test_split_v2_follows_c2_nn_profile(rows: pd.DataFrame) -> None:
+    rng = np.random.default_rng(3)
+    keys = rows["key"].unique()
+    nn = pd.Series(rng.uniform(0.3, 0.95, len(keys)), index=keys)
+    cfg = SplitConfig(max_drug_share=0.5, seed=7, c2_profile=(0.0, 0.6, 0.3, 0.1))
+    v2 = make_split(rows, cfg, nn)
+    check_leakage(rows, v2, candidate_pool_keys(rows["key"], v2))
+    c2 = v2.val[v2.val["class"] == 2]
+    bins = pd.cut(c2["nn_tanimoto"], [0.0, 0.3, 0.5, 0.7, 1.0001], right=False).value_counts(sort=False).to_numpy()
+    assert bins[0] == 0 and bins[1] >= bins[2] >= bins[3]
+    assert (c2["nn_tanimoto"] >= 0.7).mean() <= 0.1 + 2 / len(c2)
+    assert v2.val["class"].value_counts().to_dict() == make_split(rows, CFG).val["class"].value_counts().to_dict()
+
+
+def test_split_v2_needs_nn(rows: pd.DataFrame) -> None:
+    with pytest.raises(ValueError, match="nn_tanimoto"):
+        make_split(rows, SplitConfig(seed=7, c2_profile=(0.0, 0.5, 0.35, 0.15)))

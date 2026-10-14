@@ -131,7 +131,7 @@ casmi26/
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
 | `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
-| `validation/make_split.py` | `outputs/splits/{seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
+| `validation/make_split.py` | `outputs/splits/{seedN,v2_seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json`; `--difficulty` = split v2 |
 
 ### Validation split
 
@@ -144,6 +144,7 @@ describes it (timsTOF, the 10 test adducts, 157–1,159 Da), with the chemistry,
 - enveda-180 is capped at `--max-drug-share` (default 50 % → ~490 molecules), drawn with mass-bin quotas
   matching the NP mass distribution and adduct / CE importance weights;
 - `--final` writes a mask that keeps every spectrum in the library, for the submission run.
+- `--difficulty` (split v2) draws Class 2 by nn_tanimoto bin (default 0 / 50 / 35 / 15 % for 0–0.3 / 0.3–0.5 / 0.5–0.7 / 0.7+), capping easy C2; analog C2 MRR 0.75 → 0.66, still about twice the LB-implied value.
 
 | Class | Share | Library (`in_library`) | Candidate pool |
 |---|---|---|---|

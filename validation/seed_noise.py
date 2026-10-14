@@ -26,12 +26,13 @@ RUNS = {"library only": {"library": 1.0}, "analog only (ranker v0)": {"analog": 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    ap.add_argument("--prefix", default="seed", help="split directory prefix: seed (v1) or v2_seed (split v2)")
     ap.add_argument("--workers", type=int, default=24)
     args = ap.parse_args()
     t0 = time.time()
     rows = []
     for seed in args.seeds:
-        data = load_val(WORK_DIR / "splits" / f"seed{seed}")
+        data = load_val(WORK_DIR / "splits" / f"{args.prefix}{seed}")
         windows, channels = compute_channels(data, channels=("library", "analog"), workers=args.workers)
         smiles_of = dict(zip(data.pool.meta["key"], data.pool.meta["smiles"]))
         for label, w in RUNS.items():
@@ -42,12 +43,13 @@ def main() -> None:
     stats = df.groupby("run")[["C1", "C2", "C3", "total"]].agg(["mean", "std"])
     stats.columns = [f"{a}_{b}" for a, b in stats.columns]
     report = "\n\n".join([
-        f"# Seed noise (seeds {args.seeds})",
+        f"# Seed noise ({args.prefix}, seeds {args.seeds})",
         "### Per seed", md_table(df[["run", "seed", "C1", "C2", "C3", "total", "hits@1", "n"]]),
         "### Mean and std across seeds", md_table(stats.reset_index()),
         f"- runtime {time.time() - t0:.0f}s",
     ]) + "\n"
-    (REPO_ROOT / "notes" / "EXP005_seed_noise.md").write_text(report)
+    suffix = "" if args.prefix == "seed" else "_" + args.prefix.removesuffix("_seed")
+    (REPO_ROOT / "notes" / f"EXP005_seed_noise{suffix}.md").write_text(report)
     print(report)
 
 
