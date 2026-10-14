@@ -112,14 +112,19 @@ casmi26/
 | `scripts/check_adducts.py` | `notes/ADDUCTS.md`: adduct coverage, precursor ppm errors, mislabels; caches structure masses |
 | `scripts/eda.py` | `notes/EDA.md`: train/test distributions, shift, isomer pool, submission format |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
-| `validation/make_split.py` | `outputs/splits/seed{N}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
+| `validation/make_split.py` | `outputs/splits/{seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json` |
 
 ### Validation split
 
-`validation/make_split.py` holds out 2,000 molecules (seeded, deterministic), grouped by **scorer key**,
-not by the train `inchikey14` column, so tautomers can't leak. Query spectra look like the test: timsTOF,
-the test adducts, a clean precursor mass, base peak ≥ 1,000, mass 157–1,159 Da, and spectra per molecule
-plus adduct/CE mix matched to the test. All `enveda-np-examples` molecules are included as the NP proxy.
+`validation/make_split.py` builds a seeded, deterministic holdout. Molecules are grouped by **scorer key**,
+not by the train `inchikey14` column, so tautomers can't leak. The target is the hidden test as the host
+describes it (timsTOF, the 10 test adducts, 157–1,159 Da), with the chemistry, adduct mix and CE mix of
+`enveda-np-examples`:
+
+- every eligible NP example (~245) is a validation molecule;
+- enveda-180 is capped at `--max-drug-share` (default 50 % → ~490 molecules), drawn with mass-bin quotas
+  matching the NP mass distribution and adduct / CE importance weights;
+- `--final` writes a mask that keeps every spectrum in the library, for the submission run.
 
 | Class | Share | Library (`in_library`) | Candidate pool |
 |---|---|---|---|

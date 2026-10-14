@@ -13,10 +13,12 @@ Classes follow the hidden-test definitions (LB-estimated shares 16/45/39):
   in the candidate pool.
 - **C3**: every spectrum leaves the library and the structure leaves the pool.
 
-Query spectra mimic the test: timsTOF, a test adduct, consistent precursor mass,
-base peak ≥ 1000 raw counts, molecular mass inside the hidden-test range. The
-number of spectra per molecule is drawn from the visible test, and molecules and
-spectra are sampled with adduct / CE-pattern weights that match its shares.
+The target distribution is the hidden test as described by the host (timsTOF,
+the ten test adducts, neutral mass 157–1159 Da) with the chemistry, adduct and
+CE mix of ``enveda-np-examples``, the closest public proxy. Every eligible NP
+example is a validation molecule; enveda-180 molecules are added up to
+``max_drug_share`` of the set, drawn with per-mass-bin quotas matching the NP
+mass distribution and adduct / CE-pattern importance weights within each bin.
 """
 
 from __future__ import annotations
@@ -31,25 +33,28 @@ from casmi.chem import TEST_ADDUCTS
 
 TIMSTOF_LIBS = ("enveda-180", "enveda-np-examples")
 NP_EXAMPLES = "enveda-np-examples"
+DRUG_LIB = "enveda-180"
 ROW_COLUMNS = ("ingest_lib", "key", "normalized_smiles", "adduct", "ppm", "base_peak_intensity", "n_ce",
                "exact_mass")
+VAL_COLUMNS = ["molecule_id", "inchikey14", "class", "smiles", "source", "exact_mass", "n_query"]
 
 
 @dataclass(frozen=True)
 class SplitConfig:
-    n_val: int = 2000
+    max_drug_share: float = 0.5  # cap on enveda-180 molecules in validation
     class_shares: tuple[float, float, float] = (0.16, 0.45, 0.39)
     seed: int = 0
-    include_np_examples: bool = True  # every eligible enveda-np-examples molecule goes to validation
     max_abs_ppm: float = 20.0
     min_base_peak: float = 1000.0
     mass_range: tuple[float, float] = (157.0, 1159.0)
-    smoothing: float = 0.01  # added to both shares in the importance weights
+    mass_bins: tuple[float, ...] = (157.0, 250.0, 350.0, 450.0, 600.0, 800.0, 1159.0)
+    max_spectra: int = 16  # hidden test has 1–16 spectra per molecule
+    smoothing: float = 0.01  # added to shares in importance weights and bin targets
 
 
 @dataclass(frozen=True)
 class Split:
-    val: pd.DataFrame  # molecule_id, inchikey14 (scorer key), class, smiles, source, exact_mass, n_query
+    val: pd.DataFrame  # VAL_COLUMNS; inchikey14 is the scorer key
     library_mask: pd.DataFrame  # row, in_library, query_molecule_id
 
 
@@ -72,10 +77,52 @@ def _importance(values: pd.Series, target: pd.Series, alpha: float) -> pd.Series
     return values.map(w).astype(np.float64)
 
 
-def make_split(rows: pd.DataFrame, test: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> Split:
+def _bin_quotas(avail: np.ndarray, target: np.ndarray, k: int) -> np.ndarray:
+    """Split ``k`` draws over bins ∝ ``target``, capped by ``avail``; shortfalls move to open bins."""
+    if k > avail.sum():
+        raise ValueError(f"only {avail.sum()} candidates for {k} draws")
+    quota = np.zeros(len(avail), dtype=int)
+    while (left := k - quota.sum()) > 0:
+        open_ = avail > quota
+        share = np.where(open_, target, 0.0)
+        share = share / share.sum() if share.sum() > 0 else open_ / open_.sum()
+        add = np.minimum(np.floor(share * left).astype(int), avail - quota)
+        if add.sum() == 0:
+            add[np.argmax(np.where(open_, share, -1.0))] = 1
+        quota += add
+    return quota
+
+
+def _stratified_draw(rng: np.random.Generator, candidates: np.ndarray, bins: np.ndarray, weights: np.ndarray,
+                     target: np.ndarray, k: int, what: str) -> np.ndarray:
+    """``k`` of ``candidates``: per-bin quotas from ``target``, weighted draws inside each bin."""
+    avail = np.bincount(bins, minlength=len(target))
+    if k > avail.sum():
+        raise ValueError(f"only {avail.sum()} {what} molecules, need {k}")
+    quota = _bin_quotas(avail, target, k)
+    picks = []
+    for b, q in enumerate(quota):
+        idx = np.flatnonzero(bins == b)
+        picks.append(candidates[idx[_weighted_order(rng, weights[idx])[:q]]])
+    return np.concatenate(picks) if picks else np.array([], dtype=candidates.dtype)
+
+
+def eligible_queries(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> np.ndarray:
+    """Spectra that look like test spectra: timsTOF, test adduct, clean precursor, base peak, mass range."""
+    lo, hi = cfg.mass_range
+    return (
+        rows["ingest_lib"].isin(TIMSTOF_LIBS).to_numpy()
+        & rows["adduct"].isin(TEST_ADDUCTS).to_numpy()
+        & (rows["ppm"].abs() <= cfg.max_abs_ppm).to_numpy()
+        & (rows["base_peak_intensity"] >= cfg.min_base_peak).to_numpy()
+        & rows["exact_mass"].between(lo, hi).to_numpy()
+        & rows["key"].notna().to_numpy()
+    )
+
+
+def make_split(rows: pd.DataFrame, cfg: SplitConfig = SplitConfig()) -> Split:
     """Build the split. ``rows`` is one row per train spectrum, in train order, with
-    ``ROW_COLUMNS`` (``key`` = scorer key, ``ppm`` = precursor error vs the labelled
-    structure). ``test`` needs ``molecule_id``, ``adduct`` and ``n_ce``."""
+    ``ROW_COLUMNS`` (``key`` = scorer key, ``ppm`` = precursor error vs the labelled structure)."""
     missing = set(ROW_COLUMNS) - set(rows.columns)
     if missing:
         raise ValueError(f"rows is missing columns {sorted(missing)}")
@@ -83,75 +130,78 @@ def make_split(rows: pd.DataFrame, test: pd.DataFrame, cfg: SplitConfig = SplitC
     rows = rows.reset_index(drop=True)
     is_tims = rows["ingest_lib"].isin(TIMSTOF_LIBS).to_numpy()
     pattern = ce_pattern(rows["n_ce"])
-    eligible = (
-        is_tims
-        & rows["adduct"].isin(TEST_ADDUCTS).to_numpy()
-        & (rows["ppm"].abs() <= cfg.max_abs_ppm).to_numpy()
-        & (rows["base_peak_intensity"] >= cfg.min_base_peak).to_numpy()
-        & rows["key"].notna().to_numpy()
-    )
-
-    # Row weights: bring the eligible pool's adduct and CE-pattern mix towards the test's.
-    test_adduct = test["adduct"].value_counts(normalize=True)
-    test_ce = ce_pattern(test["n_ce"]).value_counts(normalize=True)
+    eligible = eligible_queries(rows, cfg)
     el = rows.loc[eligible, ["key", "adduct", "ingest_lib", "exact_mass", "normalized_smiles"]].copy()
-    el["w"] = (_importance(el["adduct"], test_adduct, cfg.smoothing)
-               * _importance(pattern[eligible], test_ce, cfg.smoothing))
+    el["pattern"] = pattern[eligible]
+    el["is_np"] = el["ingest_lib"] == NP_EXAMPLES
+    if not el["is_np"].any():
+        raise ValueError("no eligible enveda-np-examples spectra: they define the target distribution")
+
+    # Targets from the NP proxy: adduct and CE-pattern mix (spectra), mass bins and spectra per molecule.
+    np_rows = el[el["is_np"]]
+    el["w"] = (_importance(el["adduct"], np_rows["adduct"].value_counts(normalize=True), cfg.smoothing)
+               * _importance(el["pattern"], np_rows["pattern"].value_counts(normalize=True), cfg.smoothing))
+    np_spm = np.minimum(np_rows.groupby("key").size().to_numpy(), cfg.max_spectra)
 
     has_other = set(rows.loc[~is_tims & rows["key"].notna().to_numpy(), "key"])
     mol = (
         el.groupby("key", sort=True)
         .agg(smiles=("normalized_smiles", "min"), exact_mass=("exact_mass", "median"), weight=("w", "mean"),
-             n_eligible=("w", "size"), is_np=("ingest_lib", lambda s: bool((s == NP_EXAMPLES).any())))
+             is_np=("is_np", "any"))
         .reset_index()
     )
-    lo, hi = cfg.mass_range
-    mol = mol[mol["exact_mass"].between(lo, hi)].reset_index(drop=True)
-    mol["is_np"] = mol["is_np"].astype(bool)
-    mol["c1_eligible"] = mol["key"].isin(has_other)
+    mol["c1_eligible"] = mol["key"].isin(has_other).to_numpy()
+    edges = np.asarray(cfg.mass_bins)
+    mol["bin"] = np.clip(np.searchsorted(edges, mol["exact_mass"].to_numpy(), side="right") - 1, 0, len(edges) - 2)
+    np_bins = np.bincount(mol.loc[mol["is_np"], "bin"], minlength=len(edges) - 1) / mol["is_np"].sum()
+    target_bins = (np_bins + cfg.smoothing) / (np_bins + cfg.smoothing).sum()
 
-    # Class quotas. NP examples (optional) are spread over the classes first; the remaining
-    # C1 slots are drawn from molecules with non-timsTOF reference spectra, C2/C3 from the
-    # rest. Every draw is importance-weighted.
+    # Sizes: every NP molecule, plus enveda-180 up to max_drug_share of the whole set.
+    np_idx = rng.permutation(mol.index[mol["is_np"]].to_numpy())
+    n_np = len(np_idx)
+    n_val = int(round(n_np / (1.0 - cfg.max_drug_share)))
     s1, _, s3 = cfg.class_shares
-    n1, n3 = round(s1 * cfg.n_val), round(s3 * cfg.n_val)
-    n2 = cfg.n_val - n1 - n3
-    cls = pd.Series(0, index=mol.index)  # 0 = not in validation
-    if cfg.include_np_examples:
-        np_idx = rng.permutation(mol.index[mol["is_np"]].to_numpy())
-        if len(np_idx) > cfg.n_val:
-            raise ValueError(f"n_val={cfg.n_val} is smaller than the {len(np_idx)} NP-example molecules")
-        np_c1 = [i for i in np_idx if mol.at[i, "c1_eligible"]][: round(s1 * len(np_idx))]
-        np_rest = [i for i in np_idx if i not in set(np_c1)]
-        k3 = round(s3 * len(np_idx))
-        cls.loc[np_c1] = 1
-        cls.loc[np_rest[:k3]] = 3
-        cls.loc[np_rest[k3:]] = 2
+    n1, n3 = round(s1 * n_val), round(s3 * n_val)
+    n2 = n_val - n1 - n3
 
-    def draw(candidates: np.ndarray, k: int, what: str) -> np.ndarray:
-        if k < 0 or k > len(candidates):
-            raise ValueError(f"only {len(candidates)} {what} molecules, need {k}")
-        return candidates[_weighted_order(rng, mol.loc[candidates, "weight"].to_numpy())[:k]]
+    # NP molecules are spread over the classes first (C1 needs non-timsTOF references).
+    cls = pd.Series(0, index=mol.index)
+    np_c1 = [i for i in np_idx if mol.at[i, "c1_eligible"]][: round(s1 * n_np)]
+    np_rest = [i for i in np_idx if i not in set(np_c1)]
+    k3 = round(s3 * n_np)
+    cls.loc[np_c1] = 1
+    cls.loc[np_rest[:k3]] = 3
+    cls.loc[np_rest[k3:]] = 2
 
-    cls.loc[draw(mol.index[(cls == 0) & mol["c1_eligible"]].to_numpy(), n1 - int((cls == 1).sum()),
-                 "C1-eligible")] = 1
+    # enveda-180 fills the remaining quotas, mass-stratified towards the NP mass distribution.
+    drug = mol.index[~mol["is_np"]].to_numpy()
+
+    def draw(pool: np.ndarray, k: int, what: str) -> np.ndarray:
+        if k < 0:
+            raise ValueError(f"NP examples already exceed the {what} quota")
+        return _stratified_draw(rng, pool, mol.loc[pool, "bin"].to_numpy(), mol.loc[pool, "weight"].to_numpy(),
+                                target_bins, k, what)
+
+    c1_pool = drug[mol.loc[drug, "c1_eligible"].to_numpy()]
+    cls.loc[draw(c1_pool, n1 - int((cls == 1).sum()), "C1-eligible enveda-180")] = 1
     need2, need3 = n2 - int((cls == 2).sum()), n3 - int((cls == 3).sum())
-    c23 = rng.permutation(draw(mol.index[cls == 0].to_numpy(), need2 + need3, "eligible"))
+    c23 = rng.permutation(draw(drug[(cls.loc[drug] == 0).to_numpy()], need2 + need3, "enveda-180"))
     cls.loc[c23[:need3]] = 3
     cls.loc[c23[need3:]] = 2
     val = mol[cls > 0].assign(**{"class": cls[cls > 0].to_numpy()}).reset_index(drop=True)
     val["molecule_id"] = [f"v_{i:05d}" for i in range(len(val))]
 
-    # Query spectra: count from the visible test's spectra-per-molecule, rows ∝ weight.
-    spm = test.groupby("molecule_id").size().to_numpy()
+    # Query spectra: NP molecules keep all eligible spectra (≤ max_spectra); enveda-180
+    # molecules take a count drawn from the NP spectra-per-molecule distribution. Rows ∝ weight.
     by_key = el.groupby("key").indices
     el_rows = el.index.to_numpy()
     el_w = el["w"].to_numpy()
     query_mol = np.full(len(rows), None, dtype=object)
     n_query = []
-    for key, mol_id in zip(val["key"], val["molecule_id"]):
+    for key, mol_id, is_np in zip(val["key"], val["molecule_id"], val["is_np"]):
         idx = by_key[key]
-        take = idx[_weighted_order(rng, el_w[idx])[: min(int(rng.choice(spm)), len(idx))]]
+        n = cfg.max_spectra if is_np else int(rng.choice(np_spm))
+        take = idx[_weighted_order(rng, el_w[idx])[: min(n, len(idx))]]
         query_mol[el_rows[take]] = mol_id
         n_query.append(len(take))
     val["n_query"] = n_query
@@ -161,11 +211,18 @@ def make_split(rows: pd.DataFrame, test: pd.DataFrame, cfg: SplitConfig = SplitC
     in_library[key.isin(set(val["key"])).to_numpy()] = False
     in_library[(key.isin(set(val.loc[val["class"] == 1, "key"])).to_numpy()) & ~is_tims] = True
 
-    val["source"] = np.where(val["is_np"], NP_EXAMPLES, "enveda-180")
-    val = val.rename(columns={"key": "inchikey14"})[
-        ["molecule_id", "inchikey14", "class", "smiles", "source", "exact_mass", "n_query"]
-    ]
+    val["source"] = np.where(val["is_np"], NP_EXAMPLES, DRUG_LIB)
+    val = val.rename(columns={"key": "inchikey14"})[VAL_COLUMNS]
     mask = pd.DataFrame({"row": np.arange(len(rows)), "in_library": in_library, "query_molecule_id": query_mol})
+    return Split(val=val, library_mask=mask)
+
+
+def final_split(n_rows: int) -> Split:
+    """Submission mode: no validation molecules, every train spectrum (NP examples too) in the library."""
+    val = pd.DataFrame({c: pd.Series(dtype=t) for c, t in zip(
+        VAL_COLUMNS, ["object", "object", "int64", "object", "object", "float64", "int64"])})
+    mask = pd.DataFrame({"row": np.arange(n_rows), "in_library": np.ones(n_rows, dtype=bool),
+                         "query_molecule_id": np.full(n_rows, None, dtype=object)})
     return Split(val=val, library_mask=mask)
 
 
