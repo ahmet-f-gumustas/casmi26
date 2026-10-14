@@ -5,7 +5,7 @@ ascending-mass order:
 
 - ``masses.npy``: float64 neutral-atom monoisotopic mass
 - ``fps.npy``: uint8 ``[N, 256]``, Morgan radius-2 2048-bit fingerprint (``np.packbits``)
-  of the stereo-free canonical tautomer
+  of the stereo-free canonical tautomer (or ``fps.npz``, compressed, in uploaded datasets)
 - ``meta.parquet``: ``key`` (scorer key), ``smiles``, ``exact_mass``, ``formula``,
   ``formal_charge``, ``in_train``, ``in_coconut``, ``coconut_id``
 """
@@ -47,8 +47,13 @@ class CandidatePool:
 
     @property
     def fps(self) -> NDArray[np.uint8]:
+        """Packed fingerprints: ``fps.npy`` memory-mapped, or ``fps.npz`` (compressed, for upload) in memory."""
         if self._fps is None:
-            self._fps = np.load(self.path / "fps.npy", mmap_mode="r")
+            if (self.path / "fps.npy").exists():
+                self._fps = np.load(self.path / "fps.npy", mmap_mode="r")
+            else:
+                with np.load(self.path / "fps.npz") as z:
+                    self._fps = z["fps"]
         return self._fps
 
     def __len__(self) -> int:

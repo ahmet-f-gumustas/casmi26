@@ -1,6 +1,7 @@
 """Stage and upload the private Kaggle datasets the submission notebook reads.
 
 - ``red6161/casmi26-pool``: external/pool (masses.npy, fps.npy, meta.parquet)
+- ``red6161/casmi26-pool-pubchem``: external/pool_pubchem, fingerprints as compressed ``fps.npz``
 - ``red6161/casmi26-library``: outputs/train_clean.parquet
 - ``red6161/casmi26-analog-index``: outputs/analog_index, flattened (``<mode>__<file>``)
 - ``red6161/casmi26-wheels``: ms_entropy wheels for CPython 3.10–3.13 (RDKit comes from
@@ -21,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from casmi.candidates import POOL_DIR
 from casmi.config import WORK_DIR
 
@@ -30,6 +33,11 @@ DATASETS = {
     "pool": ("casmi26-pool", [POOL_DIR / "masses.npy", POOL_DIR / "fps.npy", POOL_DIR / "meta.parquet"],
              "Candidate pool for CASMI 2026: COCONUT (Oct 2026, CC0) and training structures, deduped by the "
              "metric's tautomer-canonical InChIKey14, sorted by neutral mass, with Morgan r2/2048 fingerprints."),
+    "pool_pubchem": ("casmi26-pool-pubchem", [POOL_DIR.with_name("pool_pubchem") / n for n in ("masses.npy", "fps.npy",
+                                                                                              "meta.parquet")],
+                     "Candidate pool extended with NP-like PubChem structures (CC0 mass index by prvsiyan, filtered by "
+                     "RDKit NP-likeness / COCONUT scaffolds), deduped by scorer key, mass-sorted; fingerprints "
+                     "compressed in fps.npz."),
     "library": ("casmi26-library", [WORK_DIR / "train_clean.parquet"],
                 "Competition training spectra cleaned like the test: peaks above precursor + 2 Da removed, base "
                 "peak < 1000 dropped, precursor checked against the labelled structure (|ppm| <= 20)."),
@@ -58,6 +66,11 @@ def stage(name: str) -> Path:
     if not pairs:
         raise SystemExit(f"{name}: no files to upload")
     for src, dst_name in pairs:
+        if name == "pool_pubchem" and src.name == "fps.npy":  # ~1 GB raw; compressed copy keeps the dataset small
+            dst = folder / "fps.npz"
+            if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
+                np.savez_compressed(dst, fps=np.load(src))
+            continue
         dst = folder / dst_name
         if dst.resolve() == src.resolve():
             continue

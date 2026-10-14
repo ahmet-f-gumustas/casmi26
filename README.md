@@ -104,6 +104,7 @@ casmi26/
 │   ├── ranker.py    # ranker v0 (weighted rank-normalised sum) and v1 (library gate / two-stage)
 │   ├── difficulty.py # nn_tanimoto / analog counts (blocked matmul), difficulty bins, profile tilt
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
+│   ├── pubchem.py   # reader for the mass-sorted PubChem SMILES index, NP-likeness / scaffold filter
 │   ├── channels/    # library (entropy similarity), analog (mass-shifted analogs), fragment (bond breaks)
 │   └── generate/    # Class 3: analog editing, de novo generation
 ├── validation/      # molecule-level holdout splits, class simulation
@@ -122,10 +123,12 @@ casmi26/
 | `scripts/build_pool.py` | `external/pool/`: COCONUT ∪ train, deduped by scorer key, mass-sorted `masses.npy`, Morgan-2048 `fps.npy`, `meta.parquet` (~212 MB); `notes/POOL.md` |
 | `scripts/fork_prvsiyan.py` | `outputs/kaggle/prvsiyan_v33_fork/`: prvsiyan's scored V33 cell (Apache 2.0), byte-for-byte, as a private kernel folder |
 | `scripts/analog_difficulty.py` | `notes/ANALOG_DIFFICULTY_<prefix>.md`: Class 2 MRR by nn_tanimoto bin, NP-proxy profile, LB-implied target profile (`outputs/difficulty_profile.json`) |
+| `scripts/build_pool.py --pubchem` | `external/pool_pubchem/`: pool + PubChem rows filtered by NP-likeness / COCONUT scaffold (≤ 3M); `notes/POOL_PUBCHEM.md` |
 | `scripts/check_metric.py` | `notes/METRIC_CHECK.md`: `casmi.metric` vs the official Kaggle scorer (EXP-000) |
 | `validation/candidate_recall.py` | `notes/RECALL_<split>.md`: is the answer in its mass window, per class (C3 must be 0) |
 | `validation/eval_analog.py` | `notes/EXP002_analog_*.md`: analog-channel grid (power, top-K, aggregation) per class; needs the Flash index in `outputs/analog_index` |
 | `validation/eval_fragment.py` | `notes/EXP003_fragment_*.md`: fragmentation-channel MRR per class, time per candidate, agreement with the analog channel |
+| `validation/eval_pubchem.py` | `notes/EXP011_pubchem_*.md`: recall, candidates, analog C2 cost and the Class 2b (PubChem-only) break-even, old vs PubChem pool |
 | `validation/eval_gate.py` | `notes/EXP010_gate_*.md`, `outputs/ranker_v1.json`: library gate / two-stage vs analog only per class over seeds; saves channel features per split |
 | `validation/eval_ranker.py` | `notes/EXP004_ranker_*.md`, `outputs/ranker_v0.json`: ranker-v0 weights tuned on half A, tested on half B |
 | `validation/seed_noise.py` | `notes/EXP005_seed_noise.md`: library / analog MRR@25 per class across split seeds, mean ± std |
@@ -164,6 +167,7 @@ The submission notebook is generated from this repo: `scripts/make_kaggle_notebo
 | `red6161/casmi26-pool` | candidate pool (`masses.npy`, `fps.npy`, `meta.parquet`, 212 MB) |
 | `red6161/casmi26-library` | cleaned library `train_clean.parquet` (3.4 GB) |
 | `red6161/casmi26-wheels` | ms_entropy 1.5.3 wheels, CPython 3.10–3.13 |
+| `red6161/casmi26-pool-pubchem` | pool + 1.57M NP-like PubChem structures (2.28M, `fps.npz` compressed, 183 MB) |
 | `red6161/casmi26-analog-index` | Flash entropy index of the cleaned library (2.8 GB, files flattened as `<mode>__<file>`) |
 | `metric/rdkit-2026-3-3-wheel` (public) | RDKit 2026.3.3 wheels used by the official scorer |
 
@@ -222,5 +226,5 @@ evaluate(preds, {"mol1": true_smiles})       # {'mrr@25': ..., 'hits@1': ..., ..
 
 - Competition: <https://www.kaggle.com/competitions/enveda-CASMI26-molecule-id-mass-spectra>
 - MS2Mol (Enveda): <https://chemrxiv.org/engage/chemrxiv/article-details/648dead54f8b1884b77082da>
-- Data sources: COCONUT (CC0), PubChem, MassBank / MoNA / GNPS
+- Data sources: COCONUT (CC0), PubChem via `prvsiyan/pubchem-npformula-massindex` (CC0), MassBank / MoNA / GNPS
 - Tools: RDKit, matchms, ms_entropy, MIST, SIRIUS / CSI:FingerID
