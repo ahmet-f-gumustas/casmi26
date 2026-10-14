@@ -45,3 +45,44 @@ def rank(keys: Sequence[str], combined: NDArray[np.float64], tiebreak: Mapping[s
     order = sorted((i for i in range(len(keys)) if combined[i] > 0),
                    key=lambda i: (-combined[i], -tb.get(keys[i], 0.0), keys[i]))
     return [keys[i] for i in order[:k]]
+
+
+# --------------------------------------------------------------------------------------
+# Ranker v1: library gate. A ranker config is a dict:
+#   {"mode": "weighted", "weights": {...}}                    — v0
+#   {"mode": "gate", "tau": τ, "w_lib": w}                     — analog + w × rank-normalised library,
+#                                                                 library counted only where max sim ≥ τ
+#   {"mode": "two_stage", "tau": τ}                            — library top-1 first if its max sim > τ,
+#                                                                 the remaining slots from analog
+# "library_max" is the library channel's best match over the molecule's spectra.
+# --------------------------------------------------------------------------------------
+def needed_channels(cfg: Mapping) -> set[str]:
+    """Channels a ranker config reads."""
+    if cfg.get("mode", "weighted") == "weighted":
+        return {c for c, w in cfg["weights"].items() if w}
+    return {"analog", "library_max"}
+
+
+def rank_molecule(keys: Sequence[str], per: Mapping[str, Mapping[str, float]], cfg: Mapping,
+                  k: int = TOP_K) -> list[str]:
+    """Top-``k`` keys for one molecule under a ranker config."""
+    mode = cfg.get("mode", "weighted")
+    analog = per.get("analog", {})
+    if mode == "weighted":
+        return rank(keys, combine(keys, per, cfg["weights"]), analog, k)
+    lib_max = per.get("library_max", {})
+    tau = float(cfg["tau"])
+    if mode == "gate":
+        gated = {key: s for key, s in lib_max.items() if s >= tau}
+        total = combine(keys, {"analog": analog, "library": gated}, {"analog": 1.0, "library": float(cfg["w_lib"])})
+        return rank(keys, total, analog, k)
+    if mode == "two_stage":
+        base = rank(keys, combine(keys, {"analog": analog}, {"analog": 1.0}), analog, k)
+        keyset = set(keys)
+        in_window = [key for key in lib_max if key in keyset]
+        if in_window:
+            best = min(in_window, key=lambda key: (-lib_max[key], key))
+            if lib_max[best] > tau:
+                return [best] + [key for key in base if key != best][: k - 1]
+        return base
+    raise ValueError(f"unknown ranker mode {mode!r}")

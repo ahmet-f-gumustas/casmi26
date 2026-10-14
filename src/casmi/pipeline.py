@@ -197,32 +197,42 @@ def fragment_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], sm
 
 
 def library_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], library: Path, cfg: PipelineConfig,
-                    in_library: pd.Series | None = None) -> ChannelScores:
-    """Library-channel scores (aggregation from ``cfg``) per molecule."""
+                    in_library: pd.Series | None = None, both: bool = False):
+    """Library-channel scores (aggregation from ``cfg``) per molecule.
+
+    With ``both``, returns ``(scores, max_scores)``: the configured aggregation and the best match
+    over the molecule's spectra (used by the library gate).
+    """
     refs = load_references(library, {k for ks in windows.values() for k in ks}, in_library, cfg.library)
     scores = library_scores(queries, windows, refs, cfg)
-    return {m: dict(zip(s["key"], s[cfg.aggregation].astype(float))) for m, s in scores.items() if len(s)}
+    agg = {m: dict(zip(s["key"], s[cfg.aggregation].astype(float))) for m, s in scores.items() if len(s)}
+    if not both:
+        return agg
+    return agg, {m: dict(zip(s["key"], s["max"].astype(float))) for m, s in scores.items() if len(s)}
 
 
 def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
-                          weights: Mapping[str, float], cfg: PipelineConfig = PipelineConfig(),
+                          ranker: Mapping, cfg: PipelineConfig = PipelineConfig(),
                           in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
                           ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
-    """Library + analog + fragment channels combined by ranker v0."""
-    from casmi.ranker import combine, rank as rank_keys
+    """Channels needed by ``ranker`` (a ranker-v0 weight dict or a ranker-v1 config), then ranking."""
+    from casmi.ranker import needed_channels, rank_molecule
 
+    cfg_r = ranker if "mode" in ranker else {"mode": "weighted", "weights": dict(ranker)}
+    need = needed_channels(cfg_r)
     queries = clean_queries(queries)
     windows = candidate_windows(queries, pool, cfg)
     smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
-    channels = {
-        "library": library_channel(queries, windows, library, cfg, in_library) if weights.get("library") else {},
-        "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, workers=cfg.workers)
-        if weights.get("analog") else {},
-        "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers) if weights.get("fragment") else {},
-    }
+    channels: dict[str, ChannelScores] = {}
+    if need & {"library", "library_max"}:
+        channels["library"], channels["library_max"] = library_channel(queries, windows, library, cfg, in_library,
+                                                                       both=True)
+    if "analog" in need:
+        channels["analog"] = analog_channel(queries, windows, pool, index, row_key, allowed=allowed, workers=cfg.workers)
+    if "fragment" in need:
+        channels["fragment"] = fragment_channel(queries, windows, smiles_of, workers=cfg.workers)
     preds = {}
     for mol_id, keys in windows.items():
-        per_channel = {c: channels[c].get(mol_id, {}) for c in channels}
-        total = combine(keys, per_channel, weights)
-        preds[mol_id] = [smiles_of[k] for k in rank_keys(keys, total, per_channel.get("analog"))]
+        per = {c: channels[c].get(mol_id, {}) for c in channels}
+        preds[mol_id] = [smiles_of[k] for k in rank_molecule(keys, per, cfg_r)]
     return preds, channels

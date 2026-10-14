@@ -24,7 +24,7 @@ from casmi.pipeline import (
     fragment_channel,
     library_channel,
 )
-from casmi.ranker import combine, rank
+from casmi.ranker import rank_molecule
 
 CLEAN_LIBRARY = WORK_DIR / "train_clean.parquet"
 ANALOG_INDEX = WORK_DIR / "analog_index"
@@ -79,7 +79,8 @@ def compute_channels(data: ValData, index_dir: Path = ANALOG_INDEX, channels: Se
     smiles_of = dict(zip(data.pool.meta["key"], data.pool.meta["smiles"]))
     out: dict[str, dict] = {}
     if "library" in channels:
-        out["library"] = library_channel(queries, windows, CLEAN_LIBRARY, cfg, data.in_library)
+        out["library"], out["library_max"] = library_channel(queries, windows, CLEAN_LIBRARY, cfg, data.in_library,
+                                                             both=True)
     if "analog" in channels:
         allowed = np.zeros(int(data.in_library.index.max()) + 1, dtype=bool)
         allowed[data.in_library.index.to_numpy()] = data.in_library.to_numpy()
@@ -93,23 +94,28 @@ def compute_channels(data: ValData, index_dir: Path = ANALOG_INDEX, channels: Se
 
 def predict(windows: Mapping[str, list[str]], channels: Mapping[str, dict], weights: Mapping[str, float],
             smiles_of: Mapping[str, str], ids) -> dict[str, list[str]]:
-    """Ranker-v0 predictions for molecules ``ids`` from precomputed channel scores."""
+    """Predictions for molecules ``ids`` from precomputed channel scores.
+
+    ``weights`` is a ranker-v0 weight dict or a ranker-v1 config (with ``mode``).
+    """
+    cfg = weights if "mode" in weights else {"mode": "weighted", "weights": dict(weights)}
     preds = {}
     for m in ids:
         keys = windows.get(m, [])
         per = {c: channels[c].get(m, {}) for c in channels}
-        preds[m] = [smiles_of[k] for k in rank(keys, combine(keys, per, weights), per.get("analog"))]
+        preds[m] = [smiles_of[k] for k in rank_molecule(keys, per, cfg)]
     return preds
 
 
 def reciprocal_ranks(windows: Mapping[str, list[str]], channels: Mapping[str, dict], weights: Mapping[str, float],
                      val: pd.DataFrame) -> pd.Series:
     """Per-molecule reciprocal rank of the answer's scorer key (pool keys are unique, so this equals the metric)."""
+    cfg = weights if "mode" in weights else {"mode": "weighted", "weights": dict(weights)}
     rr = {}
     for m, truth in zip(val["molecule_id"], val["inchikey14"]):
         keys = windows.get(m, [])
         per = {c: channels[c].get(m, {}) for c in channels}
-        ranked = rank(keys, combine(keys, per, weights), per.get("analog"))
+        ranked = rank_molecule(keys, per, cfg)
         rr[m] = 1.0 / (ranked.index(truth) + 1) if truth in ranked else 0.0
     return pd.Series(rr, name="rr")
 
