@@ -1,0 +1,34 @@
+# --- Local development notes (never pushed) ---
+CASMI26_baslangic.md
+notes/
+
+# --- Data & artifacts ---
+data/*
+!data/.gitkeep
+external/*
+!external/.gitkeep
+outputs/
+runs/
+*.parquet
+*.npy
+*.npz
+*.pkl
+*.pt
+*.ckpt
+*.safetensors
+submission*.csv
+
+# --- Secrets ---
+kaggle.json
+access_token
+.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/
+build/
+dist/

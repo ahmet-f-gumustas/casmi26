@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casmi"
+version = "0.1.0"
+description = "Enveda CASMI 2026 — molecule ID from MS/MS spectra"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "rdkit==2026.3.3",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "scipy",
+    "scikit-learn",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+ml = ["torch", "matchms", "ms_entropy"]
+dev = ["pytest", "kaggle", "ipykernel"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
