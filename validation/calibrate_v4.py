@@ -9,6 +9,7 @@ The chosen profile (analog-only C2 within ``--target`` ± ``--tol``, closest fir
 ``outputs/v4_profile.json``; the report to ``notes/V4_CALIBRATION.md``.
 
     python validation/calibrate_v4.py [--profiles 40,45,15,0 50,40,10,0 60,35,5,0] [--seeds 0 1 2]
+    python validation/calibrate_v4.py --profiles d0.5 d0.7 d0.85 d0.95 --name V4B_CALIBRATION   # random thinning
 """
 
 from __future__ import annotations
@@ -35,11 +36,16 @@ SHORT = {c: c.split(")")[0] + ")" if c.startswith("(") else "hit" for c in CLUST
 
 
 def build(profile: str, seed: int) -> str:
+    """``a,b,c,d``: neighbour removal from v3_seed<N>; ``d<f>``: random decoy fraction f from v2_seed<N>."""
     name = f"v4scan_{profile.replace(',', '-')}_seed{seed}"
     out = WORK_DIR / "splits" / name
+    if profile.startswith("d"):
+        how = ["--decoys-from", f"v2_seed{seed}", "--decoy-frac", profile[1:]]
+    else:
+        how = ["--v4-from", f"v3_seed{seed}", "--profile", *profile.split(",")]
     if not (out / "val_ids.parquet").exists():
-        subprocess.run([sys.executable, str(REPO_ROOT / "validation" / "make_split.py"), "--v4-from", f"v3_seed{seed}",
-                        "--profile", *profile.split(","), "--out-dir", str(out)], check=True, capture_output=True)
+        subprocess.run([sys.executable, str(REPO_ROOT / "validation" / "make_split.py"), *how, "--out-dir", str(out)],
+                       check=True, capture_output=True)
     return name
 
 
@@ -73,6 +79,7 @@ def main() -> None:
     ap.add_argument("--target", type=float, default=0.34)
     ap.add_argument("--tol", type=float, default=0.03)
     ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--name", default="V4_CALIBRATION", help="report name (notes/<name>.md, outputs/<name>.json)")
     args = ap.parse_args()
     t0 = time.time()
     index = AnalogIndex.load(ANALOG_INDEX)
@@ -87,7 +94,7 @@ def main() -> None:
             print(f"{profile} seed {seed}: C1 {r['C1']:.3f} C2 {r['C2']:.3f} NP C2 {r['NP C2']:.3f} "
                   f"({time.time() - t0:.0f}s)", flush=True)
     df = pd.DataFrame(rows)
-    df.to_parquet(WORK_DIR / "v4_calibration.parquet", index=False)
+    df.to_parquet(WORK_DIR / f"{args.name.lower()}.parquet", index=False)
     cols = [c for c in df.columns if c not in ("profile", "seed")]
     agg = df.groupby("profile", sort=False)[cols].agg(["mean", "std"])
     agg.columns = [f"{a}_{b}" for a, b in agg.columns]
@@ -99,10 +106,11 @@ def main() -> None:
     cluster_cols = ["profile", *[f"share {SHORT[c]}_mean" for c in CLUSTERS], *[f"MRR {SHORT[c]}_mean" for c in CLUSTERS]]
     if len(ok):
         best = ok.iloc[0]
-        choice = {"profile": [float(x) for x in best["profile"].split(",")], "C1": round(best["C1_mean"], 4),
+        choice = {"profile": best["profile"], "C1": round(best["C1_mean"], 4),
                   "C2": round(best["C2_mean"], 4), "NP C2": round(best["NP C2_mean"], 4), "target": args.target}
-        (WORK_DIR / "v4_profile.json").write_text(json.dumps(choice, indent=2) + "\n")
-        verdict = f"choice: **{best['profile']}** (analog-only C2 {best['C2_mean']:.3f}) → outputs/v4_profile.json"
+        out = "v4_profile.json" if args.name == "V4_CALIBRATION" else f"{args.name.lower()}.json"
+        (WORK_DIR / out).write_text(json.dumps(choice, indent=2) + "\n")
+        verdict = f"choice: **{best['profile']}** (analog-only C2 {best['C2_mean']:.3f}) → outputs/{out}"
     else:
         verdict = f"no profile within {args.target} ± {args.tol}; nothing written"
     report = "\n\n".join([
@@ -114,7 +122,7 @@ def main() -> None:
         md_table(agg[cluster_cols]),
         f"- {verdict}", f"- runtime {time.time() - t0:.0f}s",
     ]) + "\n"
-    (REPO_ROOT / "notes" / "V4_CALIBRATION.md").write_text(report)
+    (REPO_ROOT / "notes" / f"{args.name}.md").write_text(report)
     print(report)
 
 
