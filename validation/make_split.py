@@ -10,6 +10,12 @@ SMILES are cached in ``WORK_DIR/structure_keys.parquet``.
     python validation/make_split.py [--seed 0] [--max-drug-share 0.5]
     python validation/make_split.py --seed 0 --difficulty   # split v2 → splits/v2_seed0
     python validation/make_split.py --final   # submission: nothing leaves the library
+    python validation/make_split.py --decoys-from v2_seed0   # split v3 → splits/v3_seed0
+
+Split v3 (``--decoys-from``) copies an existing split and also removes the spectra of a random
+``--decoy-frac`` of the non-validation library structures (``casmi.split.add_decoys``); the pool
+is unchanged. Output names: ``v2_seedN`` → ``v3_seedN``, ``r_seedN`` → ``r3_seedN``; the decoy keys
+go to ``decoy_keys.parquet``.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from casmi.split import (
     NP_EXAMPLES,
     Split,
     SplitConfig,
+    add_decoys,
     candidate_pool_keys,
     ce_pattern,
     check_leakage,
@@ -134,6 +141,41 @@ def summary(rows: pd.DataFrame, split: Split, cfg: SplitConfig) -> str:
     ]) + "\n"
 
 
+def v3_name(name: str) -> str:
+    """Split-v3 directory name of a split derived from ``name``."""
+    if name.startswith("v2_"):
+        return "v3_" + name[3:]
+    if name.startswith("r_"):
+        return "r3_" + name[2:]
+    return name + "_v3"
+
+
+def decoy_split(source: str, frac: float, out_dir: Path | None) -> None:
+    """Split v3 from an existing split (see the module docstring)."""
+    src = WORK_DIR / "splits" / source
+    cfg = json.loads((src / "config.json").read_text())
+    split = Split(val=pd.read_parquet(src / "val_ids.parquet"), library_mask=pd.read_parquet(src / "library_mask.parquet"))
+    row_key = library_row_keys(CLEAN_LIBRARY)
+    v3, decoys = add_decoys(split, row_key, frac, cfg["seed"])
+    assert not set(decoys) & set(split.val["inchikey14"]), "a validation answer became a decoy"
+    out_dir = out_dir or WORK_DIR / "splits" / v3_name(source)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    v3.val.to_parquet(out_dir / "val_ids.parquet", index=False)
+    v3.library_mask.to_parquet(out_dir / "library_mask.parquet", index=False)
+    pd.DataFrame({"key": decoys}).to_parquet(out_dir / "decoy_keys.parquet", index=False)
+    (out_dir / "config.json").write_text(json.dumps({**cfg, "decoys_from": source, "decoy_frac": frac}, indent=2) + "\n")
+    before, after = int(split.library_mask["in_library"].sum()), int(v3.library_mask["in_library"].sum())
+    lib = set(row_key.reindex(v3.library_mask.loc[v3.library_mask["in_library"], "row"].to_numpy()).dropna())
+    report = "\n\n".join([
+        f"# Split v3: {out_dir.name} (from {source}, decoy fraction {frac})",
+        f"- {len(decoys):,} decoy structures leave the library ({before - after:,} spectra; library {before:,} → "
+        f"{after:,} spectra, {len(lib):,} structures); the candidate pool is unchanged",
+        f"- validation molecules, queries and classes are those of {source}",
+    ]) + "\n"
+    (REPO_ROOT / "notes" / f"SPLIT_{out_dir.name}.md").write_text(report)
+    print(report)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seed", type=int, default=0)
@@ -145,7 +187,12 @@ def main() -> None:
                     metavar=("B0_03", "B03_05", "B05_07", "B07_1"), help="split v2 Class 2 share per nn bin")
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--out-dir", type=Path, default=None)
+    ap.add_argument("--decoys-from", default=None, help="split v3: derive from this split (e.g. v2_seed0)")
+    ap.add_argument("--decoy-frac", type=float, default=0.3)
     args = ap.parse_args()
+    if args.decoys_from:
+        decoy_split(args.decoys_from, args.decoy_frac, args.out_dir)
+        return
 
     cfg = SplitConfig(max_drug_share=args.max_drug_share, seed=args.seed, class_shares=tuple(args.shares),
                       c2_profile=tuple(args.c2_profile) if args.difficulty else None)

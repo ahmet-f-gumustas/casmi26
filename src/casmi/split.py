@@ -271,6 +271,24 @@ def final_split(n_rows: int) -> Split:
     return Split(val=val, library_mask=mask)
 
 
+def add_decoys(split: Split, row_key: pd.Series, frac: float, seed: int) -> tuple[Split, np.ndarray]:
+    """Split v3: the spectra of a random ``frac`` of the library structures outside validation leave the library.
+
+    ``row_key`` maps a train row to its scorer key. The decoy structures stay in the candidate pool.
+    The pool is COCONUT ∪ training structures, so in a split-v2 simulation a candidate with neither
+    library spectra nor a COCONUT entry can only be a held-out validation answer; decoys give such
+    candidates a non-answer population. Returns the new split and the sorted decoy keys.
+    """
+    mask = split.library_mask
+    lib_keys = row_key.reindex(mask.loc[mask["in_library"], "row"].to_numpy()).dropna()
+    eligible = np.array(sorted(set(lib_keys) - set(split.val["inchikey14"])))
+    rng = np.random.default_rng([seed, 3])
+    decoys = np.sort(rng.choice(eligible, int(round(frac * len(eligible))), replace=False))
+    is_decoy = row_key.reindex(mask["row"].to_numpy()).isin(set(decoys)).to_numpy()
+    new_mask = mask.assign(in_library=mask["in_library"].to_numpy() & ~is_decoy)
+    return Split(val=split.val, library_mask=new_mask), decoys
+
+
 def candidate_pool_keys(all_keys: Iterable[str], split: Split) -> set[str]:
     """Structure keys retrieval may rank: everything except Class 3 answers."""
     return set(all_keys) - set(split.val.loc[split.val["class"] == 3, "inchikey14"])

@@ -2,7 +2,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from casmi.split import Split, SplitConfig, candidate_pool_keys, check_leakage, final_split, make_split
+from casmi.split import (
+    Split,
+    SplitConfig,
+    add_decoys,
+    candidate_pool_keys,
+    check_leakage,
+    final_split,
+    make_split,
+)
 
 N_MOL = 400
 N_NP = 40
@@ -132,3 +140,17 @@ def test_split_v2_follows_c2_nn_profile(rows: pd.DataFrame) -> None:
 def test_split_v2_needs_nn(rows: pd.DataFrame) -> None:
     with pytest.raises(ValueError, match="nn_tanimoto"):
         make_split(rows, SplitConfig(seed=7, c2_profile=(0.0, 0.5, 0.35, 0.15)))
+
+
+def test_decoys_leave_the_library_but_not_validation(rows: pd.DataFrame, split: Split) -> None:
+    row_key = rows["key"]
+    v3, decoys = add_decoys(split, row_key, 0.3, seed=1)
+    mask, new = split.library_mask, v3.library_mask
+    lib_keys = set(row_key[mask["in_library"].to_numpy()]) - set(split.val["inchikey14"])
+    assert len(decoys) == round(0.3 * len(lib_keys)) and set(decoys) <= lib_keys
+    is_decoy = row_key.isin(set(decoys)).to_numpy()
+    assert not new["in_library"].to_numpy()[is_decoy].any()
+    assert (new["in_library"].to_numpy()[~is_decoy] == mask["in_library"].to_numpy()[~is_decoy]).all()
+    assert new["query_molecule_id"].equals(mask["query_molecule_id"]) and v3.val is split.val
+    check_leakage(rows, v3, candidate_pool_keys(rows["key"], v3))
+    assert (add_decoys(split, row_key, 0.3, seed=1)[1] == decoys).all()
