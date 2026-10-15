@@ -13,6 +13,10 @@ its first 25 − N entries and the N best PubChem-only candidates follow.
 ``order="popularity"`` (recall probe 2a) keeps the PubChem-only candidates whose union-window score
 is at least ``min_common`` and fills the slots in order of PubChem substance count; the gate then
 compares their best union-window score.
+
+``slot_merge`` is the same idea for candidates from other mass windows (alternative adducts,
+recall probe 2b): at most N of them, each beating the main list's ``gate_k``-th score, either take
+the last slots (``tail``) or are merged in by score (``merit``).
 """
 
 from __future__ import annotations
@@ -82,3 +86,23 @@ def tier_merge(main: Sequence[str], pub: Mapping[str, float] | Sequence[tuple[st
     n = min(cfg.n_slots, len(pub), k)
     head = list(main[: k - n])
     return head + [c for c, _ in pub[:n]]
+
+
+def slot_merge(main: Sequence[str], main_scores: Mapping[str, float], extra: Mapping[str, float], n_slots: int,
+               gate_k: int, placement: str = "tail", k: int = TOP_K) -> list[str]:
+    """Final top-``k`` from ``main`` (ranked) and up to ``n_slots`` ``extra`` candidates (scores on the same
+    scale as ``main_scores``) that beat the main list's ``gate_k``-th score; ``tail`` puts them in the last
+    slots, ``merit`` merges them in by score (ties: main first)."""
+    gate = main_scores.get(main[gate_k - 1], 0.0) if len(main) >= gate_k else 0.0
+    best = sorted((c for c, s in extra.items() if s > gate and s > 0), key=lambda c: (-extra[c], c))[:n_slots]
+    if not best:
+        return list(main[:k])
+    if placement == "tail":
+        return list(main[: k - len(best)]) + best
+    if placement != "merit":
+        raise ValueError(f"unknown placement {placement!r}")
+    head = list(main[: k - len(best)])
+    order = {c: i for i, c in enumerate(head)}
+    merged = sorted(head + best, key=lambda c: (-(main_scores.get(c, 0.0) if c in order else extra[c]),
+                                                0 if c in order else 1, order.get(c, 0), c))
+    return merged[:k]

@@ -1,6 +1,6 @@
 import pytest
 
-from casmi.tier import TierConfig, prior, pub_candidates, tier_merge, union_scores
+from casmi.tier import TierConfig, prior, pub_candidates, slot_merge, tier_merge, union_scores
 
 
 def test_union_scores_rank_normalise_over_the_union() -> None:
@@ -43,3 +43,14 @@ def test_popularity_order_and_threshold() -> None:
                                                                                min_common=0.5)), mc, TierConfig(
         n_slots=2, gate_k=13))
     assert out == main[:23] + ["P3", "P1"]  # the gate compares the best union score (0.9 > 0.88)
+
+
+def test_slot_merge_tail_and_merit() -> None:
+    main = [f"M{i}" for i in range(30)]
+    ms = {m: 1.0 - i / 100 for i, m in enumerate(main)}  # M0 1.00 ... M24 0.76
+    extra = {"A": 0.995, "B": 0.5, "C": 0.9}
+    assert slot_merge(main, ms, extra, n_slots=5, gate_k=25, placement="tail") == main[:23] + ["A", "C"]
+    merit = slot_merge(main, ms, extra, n_slots=5, gate_k=25, placement="merit")
+    assert merit[:3] == ["M0", "A", "M1"] and merit.index("C") == 12 and len(merit) == 25 and "M22" in merit and "M23" not in merit
+    assert slot_merge(main, ms, extra, n_slots=1, gate_k=1, placement="merit") == main[:25]  # gate: beat M0
+    assert slot_merge(main, ms, {}, n_slots=5, gate_k=5) == main[:25]

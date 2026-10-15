@@ -252,7 +252,7 @@ def fingerprint_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], 
 def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
                           ranker: Mapping, cfg: PipelineConfig = PipelineConfig(),
                           in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
-                          fp_model=None, tier: Mapping | None = None,
+                          fp_model=None, tier: Mapping | None = None, alt_adducts: Mapping | None = None,
                           ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
     """Channels needed by ``ranker`` (a ranker-v0 weight dict or a ranker-v1 config), then ranking.
 
@@ -260,6 +260,9 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     ``tier`` (``casmi.tier.TierConfig`` fields) turns on the PubChem tier: ``pool`` is then the PubChem
     pool, the ranker sees only its base structures (``in_train`` or ``in_coconut``), and PubChem-only
     candidates may take the last slots (popularity from ``popularity.parquet`` next to the pool).
+    ``alt_adducts`` (``casmi.tier.slot_merge`` arguments ``n_slots``, ``gate_k``, ``placement``) lets
+    candidates of the alternative-adduct windows (``casmi.adducts``) into gated slots, scored by the
+    analog channel on the main list's scale; it needs an analog-only ranker.
     """
     from casmi.ranker import needed_channels, rank_molecule
 
@@ -274,8 +277,10 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     if need & {"library", "library_max"}:
         channels["library"], channels["library_max"] = library_channel(queries, windows, library, cfg, in_library,
                                                                        both=True)
+    hits = None
     if "analog" in need:
-        channels["analog"] = analog_channel(queries, windows, pool, index, row_key, allowed=allowed, workers=cfg.workers)
+        hits = analog_hits(queries.reset_index(drop=True), index, allowed=allowed, workers=cfg.workers)
+        channels["analog"] = analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits)
     if "fragment" in need:
         channels["fragment"] = fragment_channel(queries, windows, smiles_of, workers=cfg.workers)
     if "fingerprint" in need:
@@ -291,10 +296,29 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
         print(f"fingerprint channel: logits for {len(queries)} spectra / {len(logits)} molecules in {t1 - t0:.1f}s, "
               f"candidates scored in {time.time() - t1:.1f}s", flush=True)
     preds = {}
+    alt = None
+    if alt_adducts is not None:
+        from casmi.adducts import alt_windows
+
+        if need != {"analog"} or tier is not None:
+            raise ValueError("alternative adducts need an analog-only ranker and no PubChem tier")
+        alt_win = alt_windows(queries, pool, windows, cfg.ppm, cfg.offset_ppm)
+        alt = analog_channel(queries, alt_win, pool, index, row_key, allowed=allowed, hits=hits)
     if tier is None:
+        from casmi.tier import slot_merge
+
+        n_used = 0
         for mol_id, keys in windows.items():
             per = {c: channels[c].get(mol_id, {}) for c in channels}
-            preds[mol_id] = [smiles_of[k] for k in rank_molecule(keys, per, cfg_r)]
+            ranked = rank_molecule(keys, per, cfg_r)
+            if alt is not None:
+                merged = slot_merge(ranked, per["analog"], alt.get(mol_id, {}), **alt_adducts)
+                n_used += merged != ranked[: len(merged)]
+                ranked = merged
+            preds[mol_id] = [smiles_of[k] for k in ranked]
+        if alt is not None:
+            print(f"alternative adducts {dict(alt_adducts)}: {len(alt)} molecules with alternative candidates, "
+                  f"used for {n_used} of {len(windows)}", flush=True)
         return preds, channels
 
     from casmi.tier import TierConfig, pub_candidates, tier_merge, union_scores
