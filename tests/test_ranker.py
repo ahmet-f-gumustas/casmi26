@@ -50,3 +50,20 @@ def test_weighted_mode_matches_v0_and_needed_channels() -> None:
     assert needed_channels({"mode": "gate", "tau": 0.7, "w_lib": 1.0}) == {"analog", "library_max"}
     with pytest.raises(ValueError):
         rank_molecule(KEYS, PER, {"mode": "nope", "tau": 0.5})
+
+
+def test_protect_rules_keep_strong_library_matches_on_top() -> None:
+    keys = ["A", "B", "C"]
+    per = {"analog": {"A": 0.9, "B": 0.5, "C": 0.6}, "fingerprint": {"A": 0.1, "B": 0.2, "C": 0.9},
+           "library_max": {"A": 0.85, "B": 0.3}}
+    w = {"analog": 1.0, "fingerprint": 1.0}
+    # without a strong library match, every rule is the plain weighted average
+    weak = {**per, "library_max": {"A": 0.7}}
+    avg = rank_molecule(keys, weak, {"mode": "weighted", "weights": w})
+    for rule in ("switch", "boost", "two_stage"):
+        assert rank_molecule(keys, weak, {"mode": "protect", "tau": 0.8, "weights": w, "rule": rule}) == avg
+    assert avg[0] == "C"
+    assert rank_molecule(keys, per, {"mode": "protect", "tau": 0.8, "weights": w, "rule": "switch"}) == ["A", "C", "B"]
+    assert rank_molecule(keys, per, {"mode": "protect", "tau": 0.8, "weights": w, "rule": "two_stage"})[0] == "A"
+    assert rank_molecule(keys, per, {"mode": "protect", "tau": 0.8, "weights": w, "rule": "boost"})[0] == "A"
+    assert needed_channels({"mode": "protect", "tau": 0.8, "weights": w}) == {"analog", "fingerprint", "library_max"}

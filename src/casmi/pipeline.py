@@ -154,7 +154,8 @@ def analog_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool
                    workers: int = 1, hits: list | None = None) -> ChannelScores:
     """Mass-shifted analog propagation scores (see ``casmi.channels.analog``), mean over spectra.
 
-    ``hits`` (from ``analog_hits`` on the same ``queries``) skips the library search.
+    ``hits`` (from ``analog_hits`` on the same ``queries``) skips the library search;
+    ``cfg.self_min_sim`` limits a candidate's own spectra as its analogs.
     """
     from casmi.channels.analog import AnalogConfig, score_molecule as analog_score
 
@@ -171,8 +172,9 @@ def analog_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool
         keys = windows.get(mol_id, [])
         if not keys:
             continue
-        cand = fps[[fp_row_of_key[k] for k in keys]]
-        per = analog_score([hits[i] for i in idx], cand, row_fp, fps, (cfg.power,), top_k=cfg.top_k)[cfg.power]
+        rows = np.array([fp_row_of_key[k] for k in keys])
+        per = analog_score([hits[i] for i in idx], fps[rows], row_fp, fps, (cfg.power,), top_k=cfg.top_k,
+                           candidate_rows=rows, self_min_sim=cfg.self_min_sim)[cfg.power]
         out[mol_id] = dict(zip(keys, per.mean(axis=0).tolist()))
     return out
 

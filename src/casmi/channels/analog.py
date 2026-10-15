@@ -9,6 +9,9 @@ structure ``c`` then scores, for that spectrum,
 
 and the per-spectrum scores are aggregated over the molecule's spectra (max/mean).
 Unlike the library channel this ranks candidates without reference spectra (Class 2).
+A candidate's own library spectra count as its analogs only at a similarity of at least
+``self_min_sim`` (0 = always, > 1 = never): a Tanimoto-1 self match at moderate similarity
+otherwise gives every structure with library spectra a head start over one without.
 
 One Flash index per ionization mode is built over the whole cleaned library; a
 split's library mask is applied at query time, so the same index serves every
@@ -41,6 +44,7 @@ class AnalogConfig:
     ms2_tol_da: float = 0.02
     noise_threshold: float = 0.01
     max_peaks: int = 100  # per indexed spectrum, keeps the index small
+    self_min_sim: float = 0.0  # own library spectra count as analogs only at this similarity or above
 
 
 @dataclass
@@ -144,11 +148,14 @@ def tanimoto(a: NDArray[np.uint8], b: NDArray[np.uint8]) -> NDArray[np.float64]:
 
 def score_molecule(analogs: Sequence[tuple[NDArray[np.int64], NDArray[np.float64]]], candidate_fps: NDArray[np.uint8],
                    row_fp: Mapping[int, int], fps: NDArray[np.uint8], powers: Sequence[float] = (3.0,),
-                   top_k: int | None = None) -> dict[float, NDArray[np.float64]]:
+                   top_k: int | None = None, candidate_rows: NDArray[np.int64] | None = None,
+                   self_min_sim: float = 0.0) -> dict[float, NDArray[np.float64]]:
     """Per power p: matrix [n_spectra, n_candidates] of max_a sim^p × Tanimoto(candidate, analog).
 
     ``analogs`` holds (library rows, similarities) per query spectrum; ``row_fp`` maps a
     library row to its structure's fingerprint row in ``fps`` (rows without one are skipped).
+    With ``candidate_rows`` (the candidates' rows in ``fps``) a candidate's own spectra count only
+    where their similarity is at least ``self_min_sim``.
     """
     n_q, n_c = len(analogs), len(candidate_fps)
     out = {p: np.zeros((n_q, n_c)) for p in powers}
@@ -159,12 +166,19 @@ def score_molecule(analogs: Sequence[tuple[NDArray[np.int64], NDArray[np.float64
     fp_rows = sorted({row_fp[int(r)] for _, r, _ in used})
     col = {f: j for j, f in enumerate(fp_rows)}
     t = tanimoto(candidate_fps, fps[fp_rows])  # [n_c, n_analog_structures]
+    own = None
+    if candidate_rows is not None and self_min_sim > 0:
+        own = np.asarray(candidate_rows)[:, None] == np.asarray(fp_rows)[None, :]
+        t_own, t = np.where(own, t, 0.0), np.where(own, 0.0, t)
     for p in powers:
         w = np.zeros((n_q, len(fp_rows)))
         for i, r, s in used:
             j = col[row_fp[int(r)]]
             w[i, j] = max(w[i, j], s ** p)
         out[p] = (w[:, None, :] * t[None, :, :]).max(axis=2)
+        if own is not None and self_min_sim <= 1:
+            w_own = np.where(w >= self_min_sim ** p, w, 0.0)
+            out[p] = np.maximum(out[p], (w_own[:, None, :] * t_own[None, :, :]).max(axis=2))
     return out
 
 

@@ -35,6 +35,21 @@ def test_score_is_max_of_sim_power_times_tanimoto() -> None:
     assert rank_candidates(["KA", "KB"], aggregate(out, "max")) == ["KB", "KA"]
 
 
+def test_exclude_self_drops_a_candidates_own_spectra() -> None:
+    fps = np.stack([packed(1, 2), packed(1, 2, 3, 4), packed(9)])
+    row_fp = {100: 0, 101: 1, 102: 2}
+    analogs = [(np.array([100, 101]), np.array([0.95, 0.9]))]
+    rows = np.array([0, 2])  # candidate 0 is the structure of library row 100
+    out = score_molecule(analogs, fps[rows], row_fp, fps, powers=(2.0,), candidate_rows=rows, self_min_sim=2.0)[2.0]
+    assert out[0, 0] == pytest.approx(0.81 * 0.5)  # only the other analog counts
+    assert out[0, 1] == 0.0
+    with_self = score_molecule(analogs, fps[rows], row_fp, fps, powers=(2.0,))[2.0]
+    assert with_self[0, 0] == pytest.approx(0.95**2)
+    for thr, expected in ((0.9, 0.95**2), (0.96, 0.81 * 0.5), (0.0, 0.95**2)):
+        got = score_molecule(analogs, fps[rows], row_fp, fps, powers=(2.0,), candidate_rows=rows, self_min_sim=thr)
+        assert got[2.0][0, 0] == pytest.approx(expected)
+
+
 def test_top_k_prefix_and_unknown_rows() -> None:
     fps = np.stack([packed(1)])
     analogs = [(np.array([5, 7]), np.array([0.9, 0.8]))]  # row 7 has no fingerprint
