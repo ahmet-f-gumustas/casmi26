@@ -4,9 +4,14 @@ The model must be trained with ``--family v2`` (no validation molecule of any v2
 Per seed: candidate windows, analog scores and fingerprint scores (f·z and soft-Tanimoto);
 MRR@25 per class for each ranker configuration, mean ± std over seeds, and the difference to
 analog only with the noise labels (total ±0.015, C1 ±0.04, C2 ±0.02). Fingerprint scores are
-saved as ranker features to ``outputs/channels/<split>/fingerprint.parquet``.
+saved to ``outputs/channels/<split>/fingerprint_<tag>.parquet``.
+
+"protected" rows put the library gate first (``casmi.ranker`` protect mode, τ = 0.8, rule switch:
+a molecule whose best library match is ≥ τ is ranked by analog alone); the library max similarity
+comes from the split's ranker features (``validation/ranker_features.py``).
 
     python validation/eval_fp.py --model outputs/fp_models/v2_full [--prefix v2_seed] [--seeds 0 1 2]
+    python validation/eval_fp.py --model outputs/fp_models/np_v2 --prefix v3_seed
 """
 
 from __future__ import annotations
@@ -26,7 +31,8 @@ from casmi.harness import ANALOG_INDEX, CLEAN_LIBRARY, class_mrr, load_val, pred
 from casmi.pipeline import PipelineConfig, analog_channel, candidate_windows, clean_queries, fingerprint_logits
 from casmi.report import md_table
 
-NOISE = {"total": 0.015, "C1": 0.04, "C2": 0.02}
+NOISE = {"total": 0.015, "C1": 0.04, "C2": 0.02, "C2 NP": 0.02}
+PROTECT = {"mode": "protect", "tau": 0.8, "rule": "switch"}
 CONFIGS = {
     "analog only": {"analog": 1.0},
     "fingerprint only (f·z)": {"fingerprint": 1.0},
@@ -35,6 +41,9 @@ CONFIGS = {
     "analog + 0.5 fingerprint": {"analog": 1.0, "fingerprint": 0.5},
     "analog + 2 fingerprint": {"analog": 1.0, "fingerprint": 2.0},
     "analog + fingerprint soft-T (rank average)": {"analog": 1.0, "fingerprint_st": 1.0},
+    "protected: gate τ=0.8, then analog + fingerprint": {**PROTECT, "weights": {"analog": 1.0, "fingerprint": 1.0}},
+    "protected: gate τ=0.8, then analog + fingerprint soft-T": {**PROTECT, "weights": {"analog": 1.0,
+                                                                                      "fingerprint_st": 1.0}},
 }
 
 
@@ -63,7 +72,10 @@ def main() -> None:
         t1 = time.time()
         logits = fingerprint_logits(queries, windows, model)
         t_fp = time.time() - t1
+        feats = pd.read_parquet(WORK_DIR / "ranker_features" / f"{split}.parquet",
+                                columns=["molecule_id", "key", "library_max"])
         channels = {
+            "library_max": {m: dict(zip(g["key"], g["library_max"])) for m, g in feats.groupby("molecule_id")},
             "analog": analog_channel(queries, windows, data.pool, index, row_key, allowed=allowed,
                                      workers=args.workers),
             "fingerprint": fingerprint_channel(logits, windows, smiles_of, "casmi6311", workers=args.workers,
@@ -75,7 +87,7 @@ def main() -> None:
         out.mkdir(parents=True, exist_ok=True)
         pd.DataFrame([(m, k, s, channels["fingerprint_st"][m][k]) for m, ks in channels["fingerprint"].items()
                       for k, s in ks.items()], columns=["molecule_id", "key", "fingerprint", "fingerprint_st"]
-                     ).to_parquet(out / "fingerprint.parquet", index=False)
+                     ).to_parquet(out / f"fingerprint_{args.tag or args.model.name}.parquet", index=False)
         ids = data.val["molecule_id"]
         for label, w in CONFIGS.items():
             rows.append({**class_mrr(predict(windows, channels, w, smiles_of, ids), data.val, label), "seed": seed})
@@ -94,17 +106,17 @@ def main() -> None:
         d = row[f"{col}_mean"] - base[f"{col}_mean"]
         return f"{d:+.3f}" + ("" if abs(d) > NOISE[col] else " (n.m.)")
 
-    for col in ("total", "C1", "C2"):
+    for col in ("total", "C1", "C2", "C2 NP"):
         agg[f"Δ {col}"] = agg.apply(verdict, axis=1, col=col)
     agg = agg.reset_index()
     tag = args.tag or args.model.name
     report = "\n\n".join([
         f"# Fingerprint channel ({tag}; {args.prefix} {args.seeds})",
-        "- n.m. = not measurable (|Δ| ≤ 0.015 total, 0.04 C1, 0.02 C2) vs analog only; C3 is 0 everywhere",
+        "- n.m. = not measurable (|Δ| ≤ 0.015 total, 0.04 C1, 0.02 C2 / C2 NP) vs analog only; C3 is 0 everywhere",
         "### MRR@25, mean ± std over seeds", md_table(agg),
-        f"- runtime {time.time() - t0:.0f}s; fingerprint scores saved to outputs/channels/<split>/fingerprint.parquet",
+        f"- runtime {time.time() - t0:.0f}s; fingerprint scores saved to outputs/channels/<split>/fingerprint_{tag}.parquet",
     ]) + "\n"
-    (REPO_ROOT / "notes" / f"EXP_fp_{tag}.md").write_text(report)
+    (REPO_ROOT / "notes" / f"EXP_fp_{tag}_{args.prefix}.md").write_text(report)
     print(report)
 
 

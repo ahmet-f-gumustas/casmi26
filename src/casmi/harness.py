@@ -125,3 +125,33 @@ def library_keys(in_library: pd.Series) -> set[str]:
     row_key = library_row_keys(CLEAN_LIBRARY)
     rows = in_library.index[in_library.to_numpy()]
     return set(row_key.reindex(rows).dropna())
+
+
+@dataclass
+class CachedSplit:
+    """A split's validation molecules with the analog / library scores of its ranker-v2 feature rows
+    (``validation/ranker_features.py``), to re-rank under a new fingerprint model without
+    recomputing the other channels."""
+
+    val: pd.DataFrame
+    queries: pd.DataFrame  # cleaned query spectra
+    windows: dict[str, list[str]]
+    channels: dict[str, dict]  # analog, library_max
+
+    @classmethod
+    def load(cls, split: str) -> CachedSplit:
+        feats = pd.read_parquet(WORK_DIR / "ranker_features" / f"{split}.parquet",
+                                columns=["molecule_id", "key", "analog", "library_max"])
+        data = load_val(WORK_DIR / "splits" / split)
+        windows = feats.groupby("molecule_id", sort=False)["key"].agg(list).to_dict()
+        channels = {c: {m: dict(zip(g["key"], g[c])) for m, g in feats.groupby("molecule_id", sort=False)}
+                    for c in ("analog", "library_max")}
+        return cls(data.val, clean_queries(data.queries), windows, channels)
+
+    def class_rr(self, extra: Mapping[str, dict], cfg: Mapping) -> dict[str, float]:
+        """MRR@25 for C1, C2, C2 NP (enveda-np-examples) and total under ranker ``cfg``."""
+        rr = reciprocal_ranks(self.windows, {**self.channels, **extra}, cfg, self.val)
+        rr = self.val["molecule_id"].map(rr).fillna(0.0).to_numpy()
+        cls_, is_np = self.val["class"].to_numpy(), (self.val["source"] == "enveda-np-examples").to_numpy()
+        return {"C1": float(rr[cls_ == 1].mean()), "C2": float(rr[cls_ == 2].mean()),
+                "C2 NP": float(rr[(cls_ == 2) & is_np].mean()), "total": float(rr.mean())}

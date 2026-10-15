@@ -9,8 +9,19 @@ Loss = BCE over bits (pos_weight = clip(sqrt(neg/pos), 1, 30) for rare bits)
      + λ × softmax cross-entropy over the true structure and 32 decoys from its mass window,
        scored by soft-Tanimoto(sigmoid(z), f) / τ.
 
+``--np-weight w``: an epoch is len(spectra) draws with replacement, NP spectra (structure in
+COCONUT, or an enveda-np-examples spectrum) w times as likely as the others. ``--eval-splits``:
+after every epoch the model re-ranks those splits' validation molecules with the cached analog /
+library scores of their ranker features (``casmi.harness.CachedSplit``) under the C1-protected
+rank average (``--eval-rule``); the epoch with the best mean Class 2 NP MRR is kept as
+``fp_casmi.pt`` (every epoch is saved as ``epoch_<n>.pt``), and ``--patience`` epochs without a
+gain stop training. ``--stop-after`` ends a run early while the LR schedule still spans ``--epochs``
+(the final model replays the selected epoch count).
+
     python scripts/train_fp.py --out outputs/fp_models/smoke --subset 200000 --max-minutes 60
     python scripts/train_fp.py --out outputs/fp_models/v2_full --epochs 1
+    python scripts/train_fp.py --out outputs/fp_models/np_v2 --family rank --epochs 12 --np-weight 3 \\
+        --eval-splits v3_seed0 v3_seed1 v3_seed2 --patience 3
 """
 
 from __future__ import annotations
@@ -24,18 +35,30 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 
+from casmi.candidates import POOL_DIR
 from casmi.config import WORK_DIR
-from casmi.fpmodel import SpecFormer
+from casmi.fpmodel import CasmiBundle, SpecFormer
+from casmi.harness import CLEAN_LIBRARY
 
 DATA = WORK_DIR / "fp_data"
 NBITS = 6311
+NP_LIB = "enveda-np-examples"
+
+
+def np_flags(struct: np.ndarray, rows: np.ndarray) -> np.ndarray:
+    """NP spectrum: its structure is in COCONUT, or it comes from enveda-np-examples."""
+    coconut = pd.read_parquet(POOL_DIR / "meta.parquet", columns=["in_coconut"])["in_coconut"].to_numpy(bool)
+    lib = pd.read_parquet(CLEAN_LIBRARY, columns=["row", "ingest_lib"])
+    np_rows = set(lib.loc[lib["ingest_lib"] == NP_LIB, "row"].tolist())
+    return (coconut[np.maximum(struct, 0)] & (struct >= 0)) | np.isin(rows, list(np_rows))
 
 
 class Data:
-    def __init__(self, family: str, subset: int | None, seed: int) -> None:
+    def __init__(self, family: str, subset: int | None, seed: int, np_weight: float = 1.0) -> None:
         load = lambda n: np.load(DATA / f"{n}.npy")  # noqa: E731
         self.mz, self.it, self.off = load("mz"), load("it"), load("off")
         self.prec, self.adduct, self.instr = load("prec"), load("adduct"), load("instr")
@@ -49,6 +72,11 @@ class Data:
         if subset and subset < len(idx):
             idx = np.sort(rng.choice(idx, subset, replace=False))
         self.idx = idx
+        self.is_np = np_flags(self.struct[idx], load("row")[idx])
+        self.p = None
+        if np_weight != 1.0:
+            w = np.where(self.is_np, np_weight, 1.0)
+            self.p = w / w.sum()
         self.lens = np.diff(self.off)
         dstruct = load("decoy_struct")
         self.decoy_row = np.searchsorted(dstruct, np.maximum(self.struct, 0)).astype(np.int64)
@@ -56,8 +84,8 @@ class Data:
         self.pool_fp = load("pool_fp")
 
     def batches(self, batch: int, rng: np.random.Generator, mega: int = 64):
-        """Shuffled batches of similar length (sorted within mega-batches)."""
-        perm = rng.permutation(self.idx)
+        """Shuffled batches of similar length (sorted within mega-batches); weighted draws if ``p`` is set."""
+        perm = rng.permutation(self.idx) if self.p is None else rng.choice(self.idx, len(self.idx), p=self.p)
         out = []
         for s in range(0, len(perm), batch * mega):
             chunk = perm[s:s + batch * mega]
@@ -80,6 +108,39 @@ class Data:
                 "ins": self.instr[idx].astype(np.int64), "ce": self.ce[idx],
                 "mode": self.mode[idx].astype(np.float32), "struct": self.struct[idx].astype(np.int64),
                 "drow": self.decoy_row[idx]}
+
+
+class EpochEval:
+    """Validation re-ranking after each epoch (see the module docstring)."""
+
+    def __init__(self, splits: list[str], rule: str, pool_fp: np.ndarray) -> None:
+        from casmi.harness import CachedSplit
+
+        self.cached = {s: CachedSplit.load(s) for s in splits}
+        keys = pd.read_parquet(POOL_DIR / "meta.parquet", columns=["key"])["key"]
+        ok = np.load(DATA / "pool_ok.npy")
+        need = {k for c in self.cached.values() for ks in c.windows.values() for k in ks}
+        self.fp_cache = {k: (pool_fp[i] if ok[i] else None) for i, k in enumerate(keys) if k in need}
+        self.weights = {"analog": 1.0, "fingerprint": 1.0}
+        self.configs = {"analog only": {"mode": "weighted", "weights": {"analog": 1.0}},
+                        "fingerprint only": {"mode": "weighted", "weights": {"fingerprint": 1.0}},
+                        "rank average": {"mode": "weighted", "weights": self.weights},
+                        "protected": {"mode": "protect", "tau": 0.8, "weights": self.weights, "rule": rule}}
+
+    def __call__(self, model: SpecFormer, device: str) -> dict[str, dict[str, float]]:
+        from casmi.channels.fingerprint import fingerprint_channel
+        from casmi.pipeline import fingerprint_logits
+
+        model.eval()
+        bundle = CasmiBundle([model], NBITS, device)
+        out: dict[str, list] = {name: [] for name in self.configs}
+        for c in self.cached.values():
+            fp = fingerprint_channel(fingerprint_logits(c.queries, c.windows, bundle), c.windows, {}, "casmi6311",
+                                     cache=self.fp_cache)
+            for name, cfg in self.configs.items():
+                out[name].append(c.class_rr({"fingerprint": fp}, cfg))
+        model.train()
+        return {name: {k: round(float(np.mean([r[k] for r in rs])), 4) for k in rs[0]} for name, rs in out.items()}
 
 
 def prefetch(data: Data, batches: list, depth: int = 6):
@@ -113,6 +174,11 @@ def main() -> None:
     ap.add_argument("--tau", type=float, default=0.05)
     ap.add_argument("--lam", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--np-weight", type=float, default=1.0)
+    ap.add_argument("--eval-splits", nargs="*", default=[])
+    ap.add_argument("--eval-rule", default="switch", help="C1 protection rule of the evaluated rank average")
+    ap.add_argument("--patience", type=int, default=None)
+    ap.add_argument("--stop-after", type=float, default=None, help="epochs to run (default: --epochs)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(args.seed)
@@ -120,7 +186,7 @@ def main() -> None:
     dev = "cuda"
     t0 = time.time()
 
-    data = Data(args.family, args.subset, args.seed)
+    data = Data(args.family, args.subset, args.seed, args.np_weight)
     pool_fp = torch.from_numpy(data.pool_fp).to(dev)
     decoys = torch.from_numpy(data.decoys.astype(np.int64)).to(dev)
     shifts = torch.arange(7, -1, -1, device=dev, dtype=torch.uint8)
@@ -136,8 +202,9 @@ def main() -> None:
         freq += (f * torch.from_numpy(counts[s:s + 20000]).to(dev).float()[:, None]).sum(0)
     q = freq / counts.sum()
     pos_weight = torch.sqrt((1 - q) / q.clamp(min=1e-9)).clamp(1.0, 30.0)
-    print(f"{len(data.idx):,} training spectra, {len(structs):,} structures; bit frequency mean {q.mean():.4f}; "
-          f"{time.time() - t0:.0f}s", flush=True)
+    print(f"{len(data.idx):,} training spectra ({data.is_np.mean():.1%} NP, weight {args.np_weight}), "
+          f"{len(structs):,} structures; bit frequency mean {q.mean():.4f}; {time.time() - t0:.0f}s", flush=True)
+    evaluator = EpochEval(args.eval_splits, args.eval_rule, data.pool_fp) if args.eval_splits else None
 
     model = SpecFormer(NBITS, d=args.d, layers=args.layers, heads=args.heads, drop=args.drop).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01, betas=(0.9, 0.98))
@@ -149,9 +216,16 @@ def main() -> None:
     log = {"args": {k: str(v) for k, v in vars(args).items()}, "steps": []}
 
     step, deadline = 0, (time.time() + 60 * args.max_minutes) if args.max_minutes else None
+    stop = min(total, int(per_epoch * args.stop_after)) if args.stop_after else total
     model.train()
     t_train, ema = time.time(), None
-    while step < total and (deadline is None or time.time() < deadline):
+    best, best_epoch, epoch = -1.0, 0, 0
+
+    def checkpoint() -> dict:
+        return {"model": {k: v.detach().cpu() for k, v in model.state_dict().items()}, "config": config,
+                "step": step, "family": args.family, "layout": "casmi6311", "np_weight": args.np_weight}
+
+    while step < stop and (deadline is None or time.time() < deadline):
         for b in prefetch(data, data.batches(args.batch, rng)):
             b = {k: v.to(dev, non_blocking=True) for k, v in b.items()}
             with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -183,11 +257,28 @@ def main() -> None:
                        "spectra_per_s": round(rate), "min": round((time.time() - t0) / 60, 1)}
                 log["steps"].append(rec)
                 print(json.dumps(rec), flush=True)
-            if step >= total or (deadline is not None and time.time() >= deadline):
+            if step >= stop or (deadline is not None and time.time() >= deadline):
                 break
-    ck = {"model": {k: v.detach().cpu() for k, v in model.state_dict().items()}, "config": config, "step": step,
-          "family": args.family, "layout": "casmi6311"}
-    torch.save(ck, args.out / "fp_casmi.pt")
+        epoch += 1
+        if evaluator is None:
+            continue
+        torch.save(checkpoint(), args.out / f"epoch_{epoch}.pt")
+        res = evaluator(model, dev)
+        metric = res["protected"]["C2 NP"]
+        log.setdefault("epochs", []).append({"epoch": epoch, "step": step, "min": round((time.time() - t0) / 60, 1),
+                                             **{f"{n} {k}": v for n, r in res.items() for k, v in r.items()}})
+        print(json.dumps(log["epochs"][-1]), flush=True)
+        if metric > best:
+            best, best_epoch = metric, epoch
+            torch.save(checkpoint(), args.out / "fp_casmi.pt")
+        elif args.patience and epoch - best_epoch >= args.patience:
+            print(f"early stop: no C2 NP gain for {args.patience} epochs (best epoch {best_epoch})", flush=True)
+            break
+        (args.out / "train_log.json").write_text(json.dumps(log, indent=1))
+    if evaluator is None:
+        torch.save(checkpoint(), args.out / "fp_casmi.pt")
+    else:
+        log.update(best_epoch=best_epoch, best_c2_np=best)
     log.update(steps_done=step, steps_planned=total, epochs_done=step / per_epoch,
                minutes=round((time.time() - t0) / 60, 1))
     (args.out / "train_log.json").write_text(json.dumps(log, indent=1))
