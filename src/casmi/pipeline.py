@@ -297,7 +297,7 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
             preds[mol_id] = [smiles_of[k] for k in rank_molecule(keys, per, cfg_r)]
         return preds, channels
 
-    from casmi.tier import TierConfig, prior, tier_merge, union_scores
+    from casmi.tier import TierConfig, pub_candidates, tier_merge, union_scores
 
     tcfg = TierConfig(**tier)
     if cfg_r.get("mode", "weighted") != "weighted":
@@ -311,7 +311,7 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
         per = {c: channels[c].get(mol_id, {}) for c in channels}
         main = rank_molecule([k for k in keys if k in base], per, cfg_r)
         common = union_scores(keys, per, cfg_r["weights"])
-        pub = {k: common[k] * prior(sid.get(k, 0), tcfg) for k in keys if k not in base}
+        pub = pub_candidates([k for k in keys if k not in base], common, sid, tcfg)
         final = tier_merge(main, pub, common, tcfg)
         n_used += final != main[: len(final)]
         preds[mol_id] = [smiles_of[k] for k in final]

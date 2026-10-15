@@ -13,7 +13,15 @@ test C2b share b is (1 − b)·ordinary + b·C2b; the break-even share is cost /
 Bias: simulated C2b answers are training structures, more often well documented in PubChem than a
 typical PubChem-only isomer, so the popularity prior looks better here than it may on the test.
 
+``--grid aggressive`` (recall probe 2a): N = 12, PubChem-only candidates with a union-window score
+≥ ``min_common`` in order of PubChem substance count, loose gate (gate_k 13 or 25); the v7 tier
+(N 8, gate_k 17, β 0.5, score order) is the reference row. All PubChem-only rows already have
+NP-likeness > 0 (the pool filter, ``scripts/build_pool.py``). Δ total @ b: expected change if a share
+b of all test molecules had a PubChem-only answer, (1 − b)·Δ total (ordinary) + b·C2b MRR; the slots
+start at rank 25 − N + 1, which caps the C2b MRR at 1/(26 − N) when the main list is full.
+
     python validation/eval_pubchem_tier.py --model outputs/fp_models/rank_full [--prefix v2_seed] [--seeds 0 1 2]
+    python validation/eval_pubchem_tier.py --weights analog=1 --grid aggressive
 """
 
 from __future__ import annotations
@@ -35,14 +43,20 @@ from casmi.harness import ANALOG_INDEX, CLEAN_LIBRARY, load_val
 from casmi.pipeline import PipelineConfig, analog_channel, candidate_windows, clean_queries, fingerprint_logits
 from casmi.ranker import rank_molecule
 from casmi.report import md_table
-from casmi.tier import TierConfig, prior, tier_merge, union_scores
+from casmi.tier import TierConfig, pub_candidates, tier_merge, union_scores
 
 PUBCHEM_POOL = EXTERNAL_DIR / "pool_pubchem"
 WEIGHTS = {"analog": 1.0, "fingerprint": 1.0}
 SHARES = (0.02, 0.05, 0.10, 0.20)
 
 
-def grid() -> list[TierConfig]:
+V7 = TierConfig(n_slots=8, gate_k=17, beta=0.5)
+
+
+def grid(kind: str = "v1") -> list[TierConfig]:
+    if kind == "aggressive":
+        return [V7] + [TierConfig(n_slots=12, gate_k=g, beta=0.0, order="popularity", min_common=t)
+                       for g, t in itertools.product((13, 25), (0.0, 0.5, 0.7, 0.8, 0.9, 0.95))]
     out = []
     for n, beta in itertools.product((3, 5, 8), (0.0, 0.5, 1.0)):
         for gate_k in sorted({1, 3, 5, 10, TOP_K - n}):
@@ -54,7 +68,7 @@ def rr_of(ranked: list[str], answer: str) -> float:
     return 1.0 / (ranked.index(answer) + 1) if answer in ranked[:TOP_K] else 0.0
 
 
-def molecule_cases(split: str, model: CasmiBundle, index: AnalogIndex, row_key: dict, sid: dict,
+def molecule_cases(split: str, model: CasmiBundle | None, index: AnalogIndex, row_key: dict, sid: dict,
                    workers: int, weights: dict[str, float]) -> list[dict]:
     """Per molecule: the ingredients of the ordinary and (Class 2, filtered-in) C2b scenarios."""
     data = load_val(WORK_DIR / "splits" / split, pool_dir=PUBCHEM_POOL)
@@ -66,9 +80,10 @@ def molecule_cases(split: str, model: CasmiBundle, index: AnalogIndex, row_key: 
     allowed = np.zeros(int(data.in_library.index.max()) + 1, dtype=bool)
     allowed[data.in_library.index.to_numpy()] = data.in_library.to_numpy()
     smiles_of = dict(zip(meta["key"], meta["smiles"]))
-    per_all = {"analog": analog_channel(queries, windows, data.pool, index, row_key, allowed=allowed, workers=workers),
-               "fingerprint": fingerprint_channel(fingerprint_logits(queries, windows, model), windows, smiles_of,
-                                                  model.layout, workers=workers)}
+    per_all = {"analog": analog_channel(queries, windows, data.pool, index, row_key, allowed=allowed, workers=workers)}
+    if weights.get("fingerprint"):
+        per_all["fingerprint"] = fingerprint_channel(fingerprint_logits(queries, windows, model), windows, smiles_of,
+                                                     model.layout, workers=workers)
     cases = []
     for m, answer, cls, src in zip(data.val["molecule_id"], data.val["inchikey14"], data.val["class"],
                                    data.val["source"]):
@@ -90,7 +105,8 @@ def molecule_cases(split: str, model: CasmiBundle, index: AnalogIndex, row_key: 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", type=Path, required=True)
+    ap.add_argument("--model", type=Path, default=None, help="fingerprint model (needed when it has weight)")
+    ap.add_argument("--grid", choices=["v1", "aggressive"], default="v1")
     ap.add_argument("--prefix", default="v2_seed")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--workers", type=int, default=24)
@@ -100,7 +116,7 @@ def main() -> None:
     weights = {k: float(v) for k, v in (kv.split("=") for kv in args.weights.split(","))}
     tag = "_".join(k for k, v in weights.items() if v)
     t0 = time.time()
-    model = CasmiBundle.load(sorted(args.model.glob("fp_casmi*.pt")), device=args.device)
+    model = CasmiBundle.load(sorted(args.model.glob("fp_casmi*.pt")), device=args.device) if args.model else None
     index = AnalogIndex.load(ANALOG_INDEX)
     row_key = library_row_keys(CLEAN_LIBRARY).to_dict()
     pop = pd.read_parquet(PUBCHEM_POOL / "popularity.parquet")
@@ -115,22 +131,23 @@ def main() -> None:
     is_np = np.array([c["source"] == "enveda-np-examples" for c in cases])
     c2b_idx = [i for i, c in enumerate(cases) if c["c2b"] is not None]
     rows = []
-    for cfg in grid():
+    for cfg in grid(args.grid):
         ordinary, c2b, used = [], [], []
         for c in cases:
-            pub = {k: c["common"][k] * prior(sid.get(k, 0), cfg) for k in c["pub"]}
+            pub = pub_candidates(c["pub"], c["common"], sid, cfg)
             final = tier_merge(c["main"], pub, c["common"], cfg)
             used.append(final != c["main"][:TOP_K])
             ordinary.append(rr_of(final, c["answer"]))
         for i in c2b_idx:
             c = cases[i]
-            pub = {k: c["common"][k] * prior(sid.get(k, 0), cfg) for k in c["pub"] + [c["answer"]]}
+            pub = pub_candidates(c["pub"] + [c["answer"]], c["common"], sid, cfg)
             c2b.append(rr_of(tier_merge(c["c2b"], pub, c["common"], cfg), c["answer"]))
         ordinary, c2b = np.array(ordinary), np.array(c2b)
         c2_ord, c2_base = ordinary[cls == 2].mean(), base_rr[cls == 2].mean()
         m_b = c2b.mean() if len(c2b) else 0.0
         cost = c2_base - c2_ord
-        row = {"N": cfg.n_slots, "gate_k": cfg.gate_k, "beta": cfg.beta,
+        row = {"N": cfg.n_slots, "gate_k": cfg.gate_k, "beta": cfg.beta, "order": cfg.order,
+               "min_common": cfg.min_common,
                "Δ total (ordinary)": ordinary.mean() - base_rr.mean(), "Δ C2 (ordinary)": -cost,
                "Δ C2 NP (ordinary)": ordinary[(cls == 2) & is_np].mean() - base_rr[(cls == 2) & is_np].mean(),
                "C2b MRR": m_b,
@@ -140,13 +157,21 @@ def main() -> None:
         for b in SHARES:
             row[f"ΔC2 @ b={b:.0%}"] = (1 - b) * c2_ord + b * m_b - (1 - b) * c2_base
         row["break-even b"] = cost / (cost + m_b) if cost > 0 and (cost + m_b) > 0 else 0.0
+        for b in (0.05, 0.10, 0.20, 0.39):
+            row[f"Δ total @ b={b:.0%} of all"] = (1 - b) * row["Δ total (ordinary)"] + b * m_b
+        row["C2b MRR cap"] = 1 / (TOP_K - cfg.n_slots + 1)
         rows.append(row)
     res = pd.DataFrame(rows)
     ok = res[res["Δ total (ordinary)"].abs() <= 0.005]
     best = (ok if len(ok) else res).sort_values("ΔC2 @ b=5%", ascending=False).iloc[0]
+    if args.grid == "aggressive":  # the probe spec asks for an analog-score threshold
+        agg = res[(res["N"] == 12) & (res["min_common"] >= 0.5)]
+        ok = agg[agg["Δ total (ordinary)"].abs() <= 0.005]
+        best = (ok if len(ok) else agg).sort_values("C2b MRR", ascending=False).iloc[0]
     choice = {"n_slots": int(best["N"]), "gate_k": int(best["gate_k"]), "beta": float(best["beta"]),
-              "sid_cap": TierConfig().sid_cap}
-    name = "tier_v1.json" if weights == WEIGHTS else f"tier_v1_{tag}.json"
+              "sid_cap": TierConfig().sid_cap, "order": str(best["order"]), "min_common": float(best["min_common"])}
+    name = ("tier_v1.json" if weights == WEIGHTS else f"tier_v1_{tag}.json") if args.grid == "v1" \
+        else f"tier_aggressive_{tag}.json"
     (WORK_DIR / name).write_text(json.dumps({"tier": choice, "weights": weights}, indent=2) + "\n")
     report = "\n\n".join([
         f"# PubChem tier ({args.prefix} {args.seeds}; main list weights {weights})",
@@ -156,12 +181,14 @@ def main() -> None:
         f"C2 NP {base_rr[(cls == 2) & is_np].mean():.3f}; C2b MRR without the tier = 0",
         "### Grid (sorted by expected ΔC2 at a 5 % C2b share)",
         md_table(res.sort_values("ΔC2 @ b=5%", ascending=False).head(20)),
-        f"- choice (|Δ total ordinary| ≤ 0.005, best ΔC2 @ 5 %): **{choice}** → outputs/{name}",
+        f"- choice ({'N = 12 with min_common ≥ 0.5, best C2b MRR' if args.grid == 'aggressive' else 'best ΔC2 @ 5 %'} with "
+        f"|Δ total ordinary| ≤ 0.005): **{choice}** → outputs/{name}",
         "- caveat: simulated C2b answers are training structures; the popularity prior favours them more than it "
         "would a typical PubChem-only test answer",
         f"- runtime {time.time() - t0:.0f}s",
     ]) + "\n"
-    (REPO_ROOT / "notes" / f"EXP_pubchem_tier_{args.prefix}_{tag}.md").write_text(report)
+    (REPO_ROOT / "notes" / f"EXP_pubchem_tier_{args.prefix}_{tag}{'_aggressive' if args.grid == 'aggressive' else ''}.md"
+     ).write_text(report)
     print(report)
 
 

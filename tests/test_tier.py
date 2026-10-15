@@ -1,6 +1,6 @@
 import pytest
 
-from casmi.tier import TierConfig, prior, tier_merge, union_scores
+from casmi.tier import TierConfig, prior, pub_candidates, tier_merge, union_scores
 
 
 def test_union_scores_rank_normalise_over_the_union() -> None:
@@ -30,3 +30,16 @@ def test_tier_merge_gate_and_slots() -> None:
     assert tier_merge(main, weak, common, cfg) == main[:25]
     assert tier_merge(main, {}, common, cfg) == main[:25]
     assert tier_merge(main[:2], two, common, cfg) == main[:2] + ["P1", "P2"]  # short list: no gate
+
+
+def test_popularity_order_and_threshold() -> None:
+    common = {"P1": 0.9, "P2": 0.4, "P3": 0.8, "P4": 0.0}
+    sid = {"P1": 10, "P2": 1000, "P3": 500, "P4": 9999}
+    cfg = TierConfig(order="popularity", min_common=0.5)
+    assert pub_candidates(list(common), common, sid, cfg) == [("P3", 0.8), ("P1", 0.9)]
+    main = [f"M{i}" for i in range(30)]
+    mc = {m: 1.0 - i / 100 for i, m in enumerate(main)}
+    out = tier_merge(main, pub_candidates(list(common), common, sid, TierConfig(n_slots=2, gate_k=13, order="popularity",
+                                                                               min_common=0.5)), mc, TierConfig(
+        n_slots=2, gate_k=13))
+    assert out == main[:23] + ["P3", "P1"]  # the gate compares the best union score (0.9 > 0.88)

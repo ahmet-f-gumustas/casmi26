@@ -9,6 +9,10 @@ rank-normalised channel scores over the union window — times a popularity prio
 (PubChem substance records per structure; beta = 0 switches it off). The tier is used only when
 the best PubChem-only score beats the main list's ``gate_k``-th candidate; then the main list keeps
 its first 25 − N entries and the N best PubChem-only candidates follow.
+
+``order="popularity"`` (recall probe 2a) keeps the PubChem-only candidates whose union-window score
+is at least ``min_common`` and fills the slots in order of PubChem substance count; the gate then
+compares their best union-window score.
 """
 
 from __future__ import annotations
@@ -28,6 +32,8 @@ class TierConfig:
     gate_k: int = 5
     beta: float = 1.0
     sid_cap: float = 1000.0
+    order: str = "score"  # or "popularity"
+    min_common: float = 0.0  # popularity order: minimum union-window score of a PubChem candidate
 
 
 def union_scores(keys: Sequence[str], per: Mapping[str, Mapping[str, float]],
@@ -46,19 +52,33 @@ def prior(sid: float, cfg: TierConfig) -> float:
     return min(1.0, float(np.log1p(max(sid, 0.0)) / np.log1p(cfg.sid_cap))) ** cfg.beta
 
 
-def tier_merge(main: Sequence[str], pub: Mapping[str, float], common: Mapping[str, float], cfg: TierConfig,
-               k: int = TOP_K) -> list[str]:
+def pub_candidates(keys: Sequence[str], common: Mapping[str, float], sid: Mapping[str, float],
+                   cfg: TierConfig) -> list[tuple[str, float]]:
+    """PubChem-only ``keys`` in slot order, each with the score the gate compares."""
+    if cfg.order == "score":
+        s = {c: common[c] * prior(sid.get(c, 0), cfg) for c in keys if common[c] >= cfg.min_common}
+        return sorted(s.items(), key=lambda kv: (-kv[1], kv[0]))
+    if cfg.order == "popularity":
+        kept = [c for c in keys if common[c] >= cfg.min_common and common[c] > 0]
+        return [(c, common[c]) for c in sorted(kept, key=lambda c: (-sid.get(c, 0), -common[c], c))]
+    raise ValueError(f"unknown tier order {cfg.order!r}")
+
+
+def tier_merge(main: Sequence[str], pub: Mapping[str, float] | Sequence[tuple[str, float]],
+               common: Mapping[str, float], cfg: TierConfig, k: int = TOP_K) -> list[str]:
     """Final top-``k``: ``main`` (ranked base-pool keys) with the tier applied.
 
-    ``pub``: prior-weighted scores of the PubChem-only candidates; ``common``: union-window scores of
-    the main candidates (the gate compares the best ``pub`` score with ``common[main[gate_k - 1]]``).
+    ``pub``: prior-weighted scores of the PubChem-only candidates (ranked by score), or
+    ``pub_candidates`` output (already in slot order); ``common``: union-window scores of the main
+    candidates (the gate compares the best ``pub`` score with ``common[main[gate_k - 1]]``).
     """
     if not pub or cfg.n_slots <= 0:
         return list(main[:k])
-    best = sorted(pub, key=lambda c: (-pub[c], c))
+    if isinstance(pub, Mapping):
+        pub = sorted(pub.items(), key=lambda kv: (-kv[1], kv[0]))
     gate = common.get(main[cfg.gate_k - 1], 0.0) if len(main) >= cfg.gate_k else 0.0
-    if pub[best[0]] <= gate:
+    if max(s for _, s in pub) <= gate:
         return list(main[:k])
-    n = min(cfg.n_slots, len(best), k)
+    n = min(cfg.n_slots, len(pub), k)
     head = list(main[: k - n])
-    return head + best[:n]
+    return head + [c for c, _ in pub[:n]]
