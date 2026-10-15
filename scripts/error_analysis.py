@@ -31,27 +31,12 @@ import time
 import numpy as np
 import pandas as pd
 
-from casmi.channels.analog import AnalogIndex, library_row_keys, tanimoto
-from casmi.config import REPO_ROOT, TOP_K, WORK_DIR
-from casmi.data import mean_ce
+from casmi.channels.analog import AnalogIndex, library_row_keys
+from casmi.config import REPO_ROOT, WORK_DIR
+from casmi.errors import ANALOG_FAR, CLOSE, FAR, NN_EXISTS, c2_error_rows, row_instruments
 from casmi.harness import ANALOG_INDEX, CLEAN_LIBRARY, load_val
 from casmi.pipeline import PipelineConfig, analog_channel, analog_hits, candidate_windows, clean_queries
-from casmi.ranker import combine, rank
 from casmi.report import md_table
-
-CLOSE, FAR, ANALOG_FAR, NN_EXISTS = 0.8, 0.5, 0.5, 0.5
-
-
-def cluster(df: pd.DataFrame) -> pd.Series:
-    out = pd.Series("hit (rank 1)", index=df.index)
-    miss = df["rank"] != 1
-    near = miss & (df["t_top1"] > CLOSE)
-    far = miss & ~near & (df["t_top1"].fillna(0) < FAR) & (df["t_analog10"] < ANALOG_FAR)
-    out[near] = "(a) near-isomer"
-    out[far & (df["nn_tanimoto"] >= NN_EXISTS)] = "(b1) retrieval: analog exists, not retrieved"
-    out[far & (df["nn_tanimoto"] < NN_EXISTS)] = "(b2) retrieval: no library analog"
-    out[miss & ~near & ~far] = "(c) intermediate"
-    return out
 
 
 def analyse_split(split: str, index: AnalogIndex, row_key: dict[int, str], row_tims: dict[int, bool],
@@ -63,46 +48,8 @@ def analyse_split(split: str, index: AnalogIndex, row_key: dict[int, str], row_t
     allowed[data.in_library.index.to_numpy()] = data.in_library.to_numpy()
     hits = analog_hits(queries, index, allowed=allowed, workers=workers)
     scores = analog_channel(queries, windows, data.pool, index, row_key, allowed=allowed, hits=hits)
-
-    queries["n_peaks"] = queries["ms2_mzs"].map(len)
-
-    fp_row = dict(zip(data.pool.meta["key"], range(len(data.pool.meta))))
-    fps = data.pool.fps
-    rows = []
-    c2 = data.val[data.val["class"] == 2]
-    for m, answer, src, nn in zip(c2["molecule_id"], c2["inchikey14"], c2["source"], c2["nn_tanimoto"]):
-        keys = windows.get(m, [])
-        s = scores.get(m, {})
-        ranked = rank(keys, combine(keys, {"analog": s}, {"analog": 1.0}), s, k=len(keys))
-        r = ranked.index(answer) + 1 if answer in ranked else 0
-        a_fp = fps[[fp_row[answer]]] if answer in fp_row else None
-        t_cand = dict(zip(keys, tanimoto(a_fp, fps[[fp_row[k] for k in keys]])[0])) if a_fp is not None and keys else {}
-        wrong = [k for k in ranked if k != answer]
-        idx = queries.index[queries["molecule_id"] == m]
-        spec_hits = [hits[i] for i in idx]
-        best = max(((s_[0], r_[0]) for r_, s_ in spec_hits if len(r_)), default=(0.0, None))
-        top10 = {int(x) for r_, _ in spec_hits for x in r_[:10]}
-        tims10 = float(np.mean([row_tims.get(x, False) for x in top10])) if top10 else np.nan
-        an_rows = [fp_row[row_key[x]] for x in top10 if row_key.get(x) in fp_row]
-        t_an = tanimoto(a_fp, fps[sorted(set(an_rows))])[0] if a_fp is not None and an_rows else np.zeros(0)
-        b_key = row_key.get(best[1]) if best[1] is not None else None
-        q = queries.loc[idx]
-        ces = [c for c in map(mean_ce, q["collision_energy_ev"]) if np.isfinite(c)]
-        rows.append({
-            "split": split, "molecule_id": m, "source": src, "nn_tanimoto": nn,
-            "rank": r, "rr": 1.0 / r if 0 < r <= TOP_K else 0.0,
-            "n_candidates": len(keys), "n_scored": len(ranked),
-            "n_close": sum(v > CLOSE for k, v in t_cand.items() if k != answer),
-            "t_top1": t_cand.get(ranked[0]) if ranked and ranked[0] != answer else np.nan,
-            "t_wrong1": t_cand.get(wrong[0]) if wrong else np.nan,
-            "sim1": float(best[0]),
-            "t_analog1": float(tanimoto(a_fp, fps[[fp_row[b_key]]])[0, 0]) if a_fp is not None and b_key in fp_row
-            else np.nan,
-            "t_analog10": float(t_an.max()) if len(t_an) else 0.0, "tims_share10": tims10,
-            "n_spectra": len(idx), "ce": float(np.mean(ces)) if len(ces) else np.nan, "n_peaks": q["n_peaks"].mean(),
-            "instrument": q["instrument_type"].mode().iat[0] if q["instrument_type"].notna().any() else "?",
-        })
-    return pd.DataFrame(rows)
+    return c2_error_rows(split, data.val, queries, windows, scores, hits, data.pool.meta, data.pool.fps, row_key,
+                         row_tims)
 
 
 def cluster_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -164,14 +111,12 @@ def main() -> None:
     t0 = time.time()
     index = AnalogIndex.load(ANALOG_INDEX)
     row_key = library_row_keys(CLEAN_LIBRARY).to_dict()
-    inst = pd.read_parquet(CLEAN_LIBRARY, columns=["row", "instrument_type"])
-    row_tims = dict(zip(inst["row"], inst["instrument_type"].fillna("").str.contains("timsTOF", case=False)))
+    row_tims = row_instruments(CLEAN_LIBRARY)
     parts = []
     for seed in args.seeds:
         parts.append(analyse_split(f"{args.prefix}{seed}", index, row_key, row_tims, args.workers))
         print(f"{args.prefix}{seed} done ({time.time() - t0:.0f}s)", flush=True)
     df = pd.concat(parts, ignore_index=True)
-    df["cluster"] = cluster(df)
     df.to_parquet(WORK_DIR / f"error_analysis_{args.prefix}.parquet", index=False)
     np_df = df[df["source"] == "enveda-np-examples"]
     by_inst = df.groupby("instrument").agg(n=("rr", "size"), MRR=("rr", "mean"),
@@ -188,7 +133,8 @@ def main() -> None:
         "## By query instrument", md_table(by_inst.reset_index()),
         f"- per-molecule rows: outputs/error_analysis_{args.prefix}.parquet; runtime {time.time() - t0:.0f}s",
     ]) + "\n"
-    (REPO_ROOT / "notes" / "ERROR_ANALYSIS.md").write_text(report)
+    name = "ERROR_ANALYSIS.md" if args.prefix == "v2_seed" else f"ERROR_ANALYSIS_{args.prefix}.md"
+    (REPO_ROOT / "notes" / name).write_text(report)
     print(report)
 
 
