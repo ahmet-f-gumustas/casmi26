@@ -39,7 +39,6 @@ from casmi.tier import TierConfig, prior, tier_merge, union_scores
 
 PUBCHEM_POOL = EXTERNAL_DIR / "pool_pubchem"
 WEIGHTS = {"analog": 1.0, "fingerprint": 1.0}
-RANKER = {"mode": "weighted", "weights": WEIGHTS}
 SHARES = (0.02, 0.05, 0.10, 0.20)
 
 
@@ -56,7 +55,7 @@ def rr_of(ranked: list[str], answer: str) -> float:
 
 
 def molecule_cases(split: str, model: CasmiBundle, index: AnalogIndex, row_key: dict, sid: dict,
-                   workers: int) -> list[dict]:
+                   workers: int, weights: dict[str, float]) -> list[dict]:
     """Per molecule: the ingredients of the ordinary and (Class 2, filtered-in) C2b scenarios."""
     data = load_val(WORK_DIR / "splits" / split, pool_dir=PUBCHEM_POOL)
     meta = data.pool.meta
@@ -75,14 +74,16 @@ def molecule_cases(split: str, model: CasmiBundle, index: AnalogIndex, row_key: 
                                    data.val["source"]):
         keys = windows.get(m, [])
         per = {c: per_all[c].get(m, {}) for c in per_all}
-        common = union_scores(keys, per, WEIGHTS)
+        common = union_scores(keys, per, weights)
         main_keys = [k for k in keys if k in base]
         pub_keys = [k for k in keys if k not in base]
         case = {"split": split, "molecule_id": m, "class": cls, "source": src, "answer": answer,
-                "main": rank_molecule(main_keys, per, RANKER, k=TOP_K), "pub": pub_keys, "common": common,
+                "main": rank_molecule(main_keys, per, {"mode": "weighted", "weights": weights}, k=TOP_K),
+                "pub": pub_keys, "common": common,
                 "c2b": None}
         if cls == 2 and answer in filtered and answer in main_keys:
-            case["c2b"] = rank_molecule([k for k in main_keys if k != answer], per, RANKER, k=TOP_K)
+            case["c2b"] = rank_molecule([k for k in main_keys if k != answer], per,
+                                        {"mode": "weighted", "weights": weights}, k=TOP_K)
         cases.append(case)
     return cases
 
@@ -93,8 +94,11 @@ def main() -> None:
     ap.add_argument("--prefix", default="v2_seed")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--workers", type=int, default=24)
+    ap.add_argument("--weights", default="analog=1,fingerprint=1", help="channel weights of the main list")
     ap.add_argument("--device", default=None, help="fingerprint model device (default: cuda if available)")
     args = ap.parse_args()
+    weights = {k: float(v) for k, v in (kv.split("=") for kv in args.weights.split(","))}
+    tag = "_".join(k for k, v in weights.items() if v)
     t0 = time.time()
     model = CasmiBundle.load(sorted(args.model.glob("fp_casmi*.pt")), device=args.device)
     index = AnalogIndex.load(ANALOG_INDEX)
@@ -103,7 +107,7 @@ def main() -> None:
     sid = dict(zip(pop["key"], pop["pc_sid"]))
     cases = []
     for seed in args.seeds:
-        cases += molecule_cases(f"{args.prefix}{seed}", model, index, row_key, sid, args.workers)
+        cases += molecule_cases(f"{args.prefix}{seed}", model, index, row_key, sid, args.workers, weights)
         print(f"{args.prefix}{seed} done ({time.time() - t0:.0f}s)", flush=True)
 
     base_rr = np.array([rr_of(c["main"], c["answer"]) for c in cases])
@@ -142,21 +146,22 @@ def main() -> None:
     best = (ok if len(ok) else res).sort_values("ΔC2 @ b=5%", ascending=False).iloc[0]
     choice = {"n_slots": int(best["N"]), "gate_k": int(best["gate_k"]), "beta": float(best["beta"]),
               "sid_cap": TierConfig().sid_cap}
-    (WORK_DIR / "tier_v1.json").write_text(json.dumps({"tier": choice, "weights": WEIGHTS}, indent=2) + "\n")
+    name = "tier_v1.json" if weights == WEIGHTS else f"tier_v1_{tag}.json"
+    (WORK_DIR / name).write_text(json.dumps({"tier": choice, "weights": weights}, indent=2) + "\n")
     report = "\n\n".join([
-        f"# PubChem tier ({args.prefix} {args.seeds})",
+        f"# PubChem tier ({args.prefix} {args.seeds}; main list weights {weights})",
         f"- {len(cases)} molecule-seeds; C2b cases (C2 answers among the filtered PubChem rows): {len(c2b_idx)} "
         f"of {int((cls == 2).sum())} C2 (NP {int(sum(cases[i]['source'] == 'enveda-np-examples' for i in c2b_idx))})",
         f"- no tier: total {base_rr.mean():.3f}, C2 {base_rr[cls == 2].mean():.3f}, "
         f"C2 NP {base_rr[(cls == 2) & is_np].mean():.3f}; C2b MRR without the tier = 0",
         "### Grid (sorted by expected ΔC2 at a 5 % C2b share)",
         md_table(res.sort_values("ΔC2 @ b=5%", ascending=False).head(20)),
-        f"- choice (|Δ total ordinary| ≤ 0.005, best ΔC2 @ 5 %): **{choice}** → outputs/tier_v1.json",
+        f"- choice (|Δ total ordinary| ≤ 0.005, best ΔC2 @ 5 %): **{choice}** → outputs/{name}",
         "- caveat: simulated C2b answers are training structures; the popularity prior favours them more than it "
         "would a typical PubChem-only test answer",
         f"- runtime {time.time() - t0:.0f}s",
     ]) + "\n"
-    (REPO_ROOT / "notes" / f"EXP_pubchem_tier_{args.prefix}.md").write_text(report)
+    (REPO_ROOT / "notes" / f"EXP_pubchem_tier_{args.prefix}_{tag}.md").write_text(report)
     print(report)
 
 
