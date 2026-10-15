@@ -103,6 +103,8 @@ casmi26/
 │   ├── harness.py   # load a split's queries / mask / pool, channel scores, MRR@25 per class
 │   ├── ranker.py    # ranker v0 (weighted rank-normalised sum) and v1 (library gate / two-stage)
 │   ├── ranker_v2.py # learned ranker: per-candidate features, bagged HistGradientBoosting fitted in place
+│   ├── combiners.py # analog + fingerprint (+ fragment) combiners: top-K re-rank, softmax product, logistic; rank-1 insertion
+│   ├── errors.py    # Class 2 failure clusters of the analog ranking (near-isomer / retrieval / intermediate)
 │   ├── difficulty.py # nn_tanimoto / analog counts (blocked matmul), difficulty bins, profile tilt
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── pubchem.py   # reader for the mass-sorted PubChem SMILES index, NP-likeness / scaffold filter
@@ -129,7 +131,7 @@ casmi26/
 | `scripts/fork_prvsiyan.py` | `outputs/kaggle/prvsiyan_v33_fork/`: prvsiyan's scored V33 cell (Apache 2.0), byte-for-byte, as a private kernel folder |
 | `scripts/analog_difficulty.py` | `notes/ANALOG_DIFFICULTY_<prefix>.md`: Class 2 MRR by nn_tanimoto bin, NP-proxy profile, LB-implied target profile (`outputs/difficulty_profile.json`) |
 | `scripts/build_pool.py --pubchem` | `external/pool_pubchem/`: pool + PubChem rows filtered by NP-likeness / COCONUT scaffold (≤ 3M); `notes/POOL_PUBCHEM.md` |
-| `scripts/error_analysis.py` | `notes/ERROR_ANALYSIS.md`, `outputs/error_analysis_<prefix>.parquet`: Class 2 failures of the analog channel by cluster (near-isomer / retrieval / intermediate), NP subset |
+| `scripts/error_analysis.py` | `notes/ERROR_ANALYSIS[_<prefix>].md`, `outputs/error_analysis_<prefix>.parquet`: Class 2 failures of the analog channel by cluster (near-isomer / retrieval / intermediate), NP subset |
 | `scripts/build_fp_data.py` | `outputs/fp_data/`: library spectra as fingerprint-model inputs (m/z rounded to 0.01 Da, ≤ 256 peaks), casmi6311 pool fingerprints, ±10 ppm decoys, per-split-family training masks |
 | `scripts/train_fp.py` | `outputs/fp_models/<name>/fp_casmi.pt`: SpecFormer (8 × 512 transformer, CLS) trained with BCE (rare-bit pos_weight) + soft-Tanimoto ranking loss over 32 decoys; `--np-weight` upweights natural products, `--eval-splits` scores every epoch (C1-protected) and keeps the best, `--patience` stops early |
 | `scripts/recall_diagnosis.py` | `notes/DIAGNOSIS.md`: test columns, in-library share of Class 2 window candidates vs wrong analog top-1s, analog channel without self matches (alone and C1-protected) |
@@ -140,6 +142,10 @@ casmi26/
 | `validation/eval_fragment.py` | `notes/EXP003_fragment_*.md`: fragmentation-channel MRR per class, time per candidate, agreement with the analog channel |
 | `validation/eval_fp.py` | `notes/EXP_fp_<model>_<prefix>.md`: fingerprint channel alone (f·z, soft-Tanimoto), with the analog channel and C1-protected (library gate τ = 0.8 first), per class over the v2 or v3 seeds; saves fingerprint features |
 | `validation/eval_pubchem_tier.py` | `notes/EXP_pubchem_tier_*.md`, `outputs/tier_v1.json`: PubChem tier (last N slots, gate, popularity prior) — cost on validation, recovery of simulated PubChem-only Class 2; `--grid aggressive` (N = 12, popularity order) → `outputs/tier_aggressive_<weights>.json` |
+| `validation/calibrate_v4.py` | `notes/V4_CALIBRATION.md`, `outputs/v4_profile.json`: analog-only MRR per class, failure-cluster shares and window sizes per nn profile; picks the profile with the LB-implied Class 2 MRR |
+| `validation/eval_self_match.py` | `notes/EXP_self_match_<prefix>.md`: analog channel with self_min_sim 0 / 0.7 / 0.9 / never, alone and behind the library gate, per class and failure cluster |
+| `validation/backtest_lb.py` | `notes/BACKTEST_LB.md`: what each split family implies for leaderboard results we already have (analog only, analog + FP rank average) |
+| `validation/eval_combiners.py` | `notes/EXP_combiners_v4.md`, `outputs/combiners_v4.json`: combiners of the analog and fingerprint channels (+ fragment), rank-1 insertion τ, ranker v3 (HGB) on split v4 |
 | `validation/eval_alt_adducts.py` | `notes/EXP_alt_adducts.md`, `outputs/alt_adducts_v1.json`: alternative-adduct slots (tail / merit, gate) — cost on validation, slot loss on the placeholder test, recovery of simulated mislabelled adducts |
 | `validation/ranker_features.py` | `outputs/ranker_features/<split>.parquet`: per-(molecule, candidate) ranker-v2 features for the v2 seeds and the ranker splits r_seed10–14 |
 | `validation/eval_ranker_v2.py` | `notes/EXP_ranker_v2*.md`, `outputs/ranker_v2*.json`, `outputs/ranker_train*/`: learned ranker vs rank average per class over the v2 seeds (training on r_seed10–14); `--splits v3` uses v3_seed0–2 / r3_seed10–14 |
@@ -150,7 +156,7 @@ casmi26/
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
 | `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
-| `validation/make_split.py` | `outputs/splits/{seedN,v2_seedN,v3_seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json`; `--difficulty` = split v2, `--decoys-from` = split v3 (+ `decoy_keys.parquet`) |
+| `validation/make_split.py` | `outputs/splits/{seedN,v2_seedN,v3_seedN,v4_seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json`; `--difficulty` = split v2, `--decoys-from` = split v3 (+ `decoy_keys.parquet`), `--v4-from --profile` = split v4 (+ `neighbour_keys.parquet`) |
 
 ### Validation split
 
@@ -168,6 +174,11 @@ describes it (timsTOF, the 10 test adducts, 157–1,159 Da), with the chemistry,
   structures (81k structures, ~0.7M spectra). The pool is unchanged, so "no library spectra, not in COCONUT"
   no longer marks the held-out answer (70 % → 1.8 % of such ranker training rows), and Class 2 windows hold
   fewer structures with library spectra (60 % → 42 %).
+- `--v4-from v3_seedN --profile 60 35 5 0` (split v4, the decision split) sets the Class 2 nn_tanimoto profile.
+  Almost no eligible molecule has an nn below 0.4 against the full library, so the profile cannot be sampled;
+  instead each Class 2 answer gets a bin and its library neighbours at or above the bin's upper edge leave the
+  library (they stay in the pool). `validation/calibrate_v4.py` picked 60 / 35 / 5 / 0: analog-only C2 0.330
+  (C1 0.907, NP C2 0.219), close to the C2 the leaderboard implies (~0.32–0.34).
 
 | Class | Share | Library (`in_library`) | Candidate pool |
 |---|---|---|---|
@@ -200,6 +211,7 @@ python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_f
 python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_v2.json --fp casmi  # ranker v2, fitted in the notebook
 python scripts/make_kaggle_notebook.py --mode combined --pool pubchem --tier outputs/tier_aggressive_analog.json  # probe 2a
 python scripts/make_kaggle_notebook.py --mode combined --alt-adducts outputs/alt_adducts_v1.json  # probe 2b
+python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/combiner_e5.json --fp casmi  # combiner (GPU)
 kaggle kernels push -p kaggle/submission
 kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
     -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"
@@ -236,6 +248,15 @@ training does not move Class 2 NP past the analog channel (+0.004 on v3, −0.03
 
 Since validation cannot measure recall, the leaderboard is now spent on recall probes against analog only
 (0.285): a larger PubChem tier ordered by popularity (2a) and gated slots for alternative-adduct windows (2b).
+
+Split v4 reaches the leaderboard's analog-only level by removing each Class 2 answer's library neighbours, which
+also makes the answer the window candidate with the emptiest neighbourhood (NP answers' percentile 0.71 → 0.27).
+That handicaps the analog channel for the answer only: v4 implies +0.04 for the analog + fingerprint rank
+average, the leaderboard said −0.023 (`validation/backtest_lb.py`). Combiner choices are therefore checked on
+v3 and v4 together. Training-free z-score combiners keep Class 1 and gain on both; the chosen one re-ranks the
+analog top-100 by 0.5·z(analog) + 0.5·z(fingerprint) + 0.3·z(fragment) (NP C2 +0.050 on v3, +0.156 on v4).
+Learned combiners lose Class 1, and every NP example is a validation molecule in every split, so they must be
+fitted without the validation split's answers.
 
 ### Quick usage
 
