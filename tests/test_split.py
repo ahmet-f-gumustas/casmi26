@@ -10,6 +10,8 @@ from casmi.split import (
     check_leakage,
     final_split,
     make_split,
+    neighbour_decoys,
+    nn_caps,
 )
 
 N_MOL = 400
@@ -154,3 +156,47 @@ def test_decoys_leave_the_library_but_not_validation(rows: pd.DataFrame, split: 
     assert new["query_molecule_id"].equals(mask["query_molecule_id"]) and v3.val is split.val
     check_leakage(rows, v3, candidate_pool_keys(rows["key"], v3))
     assert (add_decoys(split, row_key, 0.3, seed=1)[1] == decoys).all()
+
+
+def test_nn_caps_follow_the_profile_per_source(split: Split) -> None:
+    caps = nn_caps(split.val, (0.5, 0.5, 0.0, 0.0), (0.0, 0.3, 0.5, 0.7, 1.0001), seed=3)
+    c2 = split.val[split.val["class"] == 2].set_index("molecule_id")
+    assert set(caps.index) == set(c2.index) and set(caps.unique()) <= {0.3, 0.5}
+    for _, ids in c2.groupby("source").groups.items():
+        assert abs((caps[ids] == 0.3).sum() - (caps[ids] == 0.5).sum()) <= 1
+    assert caps.equals(nn_caps(split.val, (0.5, 0.5, 0.0, 0.0), (0.0, 0.3, 0.5, 0.7, 1.0001), seed=3))
+    assert (nn_caps(split.val, (0, 0, 0, 1), (0.0, 0.3, 0.5, 0.7, 1.0001), seed=3) == np.inf).all()
+
+
+def test_neighbour_decoys_cap_the_answers_nn(rows: pd.DataFrame, split: Split) -> None:
+    from casmi.difficulty import unpack
+
+    keys = sorted(rows["key"].unique())
+    rng = np.random.default_rng(0)
+    fps = np.packbits(rng.random((len(keys), 2048)) < 0.05, axis=1)
+    key_row = dict(zip(keys, range(len(keys))))
+    caps = nn_caps(split.val, (0.0, 1.0, 0.0, 0.0), (0.0, 0.04, 0.05, 0.7, 1.0001), seed=1)  # every C2 capped at 0.05
+    v4, removed, nn = neighbour_decoys(split, rows["key"], caps, fps, key_row)
+    lib = set(rows.loc[split.library_mask["in_library"].to_numpy(), "key"])
+    assert 0 < len(removed) < len(lib) and not set(removed) & set(split.val["inchikey14"])
+    assert (nn < 0.05).all() and set(nn.index) == set(caps.index)
+    bits = unpack(fps)
+    val = split.val.set_index("molecule_id")
+    a = bits[[key_row[val.at[m, "inchikey14"]] for m in caps.index]]
+    r = bits[[key_row[k] for k in removed]]
+    inter = a @ r.T
+    t = inter / (a.sum(1)[:, None] + r.sum(1)[None, :] - inter)
+    assert (t.max(axis=0) >= 0.05).all()  # every removed structure is near some capped answer
+    is_removed = rows["key"].isin(set(removed)).to_numpy()
+    new, old = v4.library_mask["in_library"].to_numpy(), split.library_mask["in_library"].to_numpy()
+    assert not new[is_removed].any() and (new[~is_removed] == old[~is_removed]).all()
+    check_leakage(rows, v4, candidate_pool_keys(rows["key"], v4))
+
+
+def test_nn_caps_never_lift_a_molecule_above_its_nn(split: Split) -> None:
+    val = split.val.copy()
+    c2 = val["class"] == 2
+    val.loc[c2, "nn_tanimoto"] = np.where(np.arange(c2.sum()) % 2 == 0, 0.4, 0.8)
+    caps = nn_caps(val, (0.0, 0.0, 1.0, 0.0), (0.0, 0.3, 0.5, 0.7, 1.0001), seed=0)
+    nn = val.set_index("molecule_id")["nn_tanimoto"]
+    assert (caps[nn[caps.index] < 0.5] == 0.5).all() and (caps[nn[caps.index] >= 0.5] == 0.7).all()

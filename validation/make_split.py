@@ -11,11 +11,22 @@ SMILES are cached in ``WORK_DIR/structure_keys.parquet``.
     python validation/make_split.py --seed 0 --difficulty   # split v2 → splits/v2_seed0
     python validation/make_split.py --final   # submission: nothing leaves the library
     python validation/make_split.py --decoys-from v2_seed0   # split v3 → splits/v3_seed0
+    python validation/make_split.py --v4-from v3_seed0 --profile 40 45 15 0   # split v4 → splits/v4_seed0
 
 Split v3 (``--decoys-from``) copies an existing split and also removes the spectra of a random
 ``--decoy-frac`` of the non-validation library structures (``casmi.split.add_decoys``); the pool
 is unchanged. Output names: ``v2_seedN`` → ``v3_seedN``, ``r_seedN`` → ``r3_seedN``; the decoy keys
 go to ``decoy_keys.parquet``.
+
+Split v4 (``--v4-from``) takes a split v3 and gives every Class 2 molecule an nn_tanimoto bin drawn
+by ``--profile`` (shares for 0–0.3 / 0.3–0.5 / 0.5–0.7 / 0.7+, per source; ``casmi.split.nn_caps``).
+Library structures at or above the bin's upper edge from the answer leave the library
+(``casmi.split.neighbour_decoys``); validation structures stay, and so does the pool. The eligible
+molecules have almost no nn_tanimoto below 0.4 against the full library, so a profile can only be
+reached by removing neighbours. ``val_ids.parquet`` gains ``nn_cap`` and ``nn_tanimoto_full``
+(before removal); ``nn_tanimoto`` is the Class 2 answer's nn against the remaining library.
+Output names: ``v3_seedN`` → ``v4_seedN``, ``r3_seedN`` → ``r4_seedN``; removed keys go to
+``neighbour_keys.parquet``.
 """
 
 from __future__ import annotations
@@ -44,6 +55,8 @@ from casmi.split import (
     eligible_queries,
     final_split,
     make_split,
+    neighbour_decoys,
+    nn_caps,
 )
 from casmi.structures import structure_table
 from casmi.candidates import CandidatePool
@@ -176,6 +189,59 @@ def decoy_split(source: str, frac: float, out_dir: Path | None) -> None:
     print(report)
 
 
+def v4_name(name: str) -> str:
+    """Split-v4 directory name of a split derived from ``name``."""
+    if name.startswith("v3_"):
+        return "v4_" + name[3:]
+    if name.startswith("r3_"):
+        return "r4_" + name[3:]
+    return name + "_v4"
+
+
+def v4_split(source: str, profile: list[float], out_dir: Path | None) -> None:
+    """Split v4 from a split v3 (see the module docstring)."""
+    src = WORK_DIR / "splits" / source
+    cfg = json.loads((src / "config.json").read_text())
+    split = Split(val=pd.read_parquet(src / "val_ids.parquet"), library_mask=pd.read_parquet(src / "library_mask.parquet"))
+    row_key = library_row_keys(CLEAN_LIBRARY)
+    pool = CandidatePool.load()
+    key_row = dict(zip(pool.meta["key"], range(len(pool.meta))))
+    edges = tuple(cfg.get("nn_edges") or SplitConfig().nn_edges)
+    shares = np.asarray(profile, dtype=float) / np.sum(profile)
+    caps = nn_caps(split.val, shares, edges, cfg["seed"])
+    v4, removed, nn = neighbour_decoys(split, row_key, caps, pool.fps, key_row)
+    val = v4.val.copy()
+    val["nn_tanimoto_full"] = val["nn_tanimoto"] if "nn_tanimoto" in val.columns else np.nan
+    val["nn_cap"] = val["molecule_id"].map(caps)
+    val["nn_tanimoto"] = val["molecule_id"].map(nn).fillna(val["nn_tanimoto_full"])
+    out_dir = out_dir or WORK_DIR / "splits" / v4_name(source)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    val.to_parquet(out_dir / "val_ids.parquet", index=False)
+    v4.library_mask.to_parquet(out_dir / "library_mask.parquet", index=False)
+    pd.DataFrame({"key": removed}).to_parquet(out_dir / "neighbour_keys.parquet", index=False)
+    (out_dir / "config.json").write_text(json.dumps(
+        {**cfg, "v4_from": source, "nn_profile": shares.round(4).tolist(), "nn_edges": list(edges)}, indent=2) + "\n")
+    before, after = int(split.library_mask["in_library"].sum()), int(v4.library_mask["in_library"].sum())
+    c2 = val[val["class"] == 2]
+
+    def bins(col: str, sub: pd.DataFrame) -> pd.Series:
+        return pd.cut(sub[col], list(edges), right=False, labels=BIN_LABELS).value_counts(normalize=True).sort_index()
+
+    tab = pd.DataFrame({"C2 before": bins("nn_tanimoto_full", c2), "C2 after": bins("nn_tanimoto", c2),
+                        "NP C2 before": bins("nn_tanimoto_full", c2[c2["source"] == NP_EXAMPLES]),
+                        "NP C2 after": bins("nn_tanimoto", c2[c2["source"] == NP_EXAMPLES]),
+                        "profile": pd.Series(shares, index=list(BIN_LABELS))}).reset_index(names="nn_tanimoto")
+    report = "\n\n".join([
+        f"# Split v4: {out_dir.name} (from {source}, nn profile {shares.round(3).tolist()})",
+        f"- {len(removed):,} neighbour structures leave the library ({before - after:,} spectra; library {before:,} → "
+        f"{after:,} spectra); the candidate pool is unchanged",
+        f"- validation molecules, queries and classes are those of {source}",
+        "### Class 2 nn_tanimoto bins (shares) against the library before / after", md_table(tab),
+    ]) + "\n"
+    (REPO_ROOT / "notes" / f"SPLIT_{out_dir.name}.md").write_text(report)
+    print(report)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seed", type=int, default=0)
@@ -189,7 +255,13 @@ def main() -> None:
     ap.add_argument("--out-dir", type=Path, default=None)
     ap.add_argument("--decoys-from", default=None, help="split v3: derive from this split (e.g. v2_seed0)")
     ap.add_argument("--decoy-frac", type=float, default=0.3)
+    ap.add_argument("--v4-from", default=None, help="split v4: derive from this split v3 (e.g. v3_seed0)")
+    ap.add_argument("--profile", type=float, nargs=4, default=None, metavar=("B0_03", "B03_05", "B05_07", "B07_1"),
+                    help="split v4 Class 2 share per nn bin")
     args = ap.parse_args()
+    if args.v4_from:
+        v4_split(args.v4_from, args.profile, args.out_dir)
+        return
     if args.decoys_from:
         decoy_split(args.decoys_from, args.decoy_frac, args.out_dir)
         return

@@ -104,3 +104,21 @@ def library_nn(keys: Sequence[str], fps: NDArray[np.uint8], masses: NDArray[np.f
             cache.parent.mkdir(parents=True, exist_ok=True)
             cached.to_parquet(cache, index=False)
     return cached[cached["key"].isin(set(keys))].reset_index(drop=True)
+
+
+def neighbours_at_least(query_fps: NDArray[np.uint8], caps: Sequence[float], ref_fps: NDArray[np.uint8],
+                        chunk: int = 200) -> list[NDArray[np.int64]]:
+    """Per query: positions of the references whose Tanimoto to it is at least its cap (``inf``: none)."""
+    ref = unpack(ref_fps)
+    ref_bits = ref.sum(axis=1)
+    caps = np.asarray(caps, dtype=np.float64)
+    out = []
+    for start in range(0, len(caps), chunk):
+        stop = min(start + chunk, len(caps))
+        q = unpack(query_fps[start:stop])
+        inter = q @ ref.T
+        union = q.sum(axis=1)[:, None] + ref_bits[None, :] - inter
+        t = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+        out.extend(np.flatnonzero(t[i] >= cap) if np.isfinite(cap) else np.zeros(0, dtype=np.int64)
+                   for i, cap in enumerate(caps[start:stop]))
+    return out

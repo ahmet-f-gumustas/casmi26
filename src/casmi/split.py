@@ -23,7 +23,7 @@ mass distribution and adduct / CE-pattern importance weights within each bin.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -279,14 +279,77 @@ def add_decoys(split: Split, row_key: pd.Series, frac: float, seed: int) -> tupl
     library spectra nor a COCONUT entry can only be a held-out validation answer; decoys give such
     candidates a non-answer population. Returns the new split and the sorted decoy keys.
     """
-    mask = split.library_mask
-    lib_keys = row_key.reindex(mask.loc[mask["in_library"], "row"].to_numpy()).dropna()
-    eligible = np.array(sorted(set(lib_keys) - set(split.val["inchikey14"])))
+    eligible = np.array(sorted(_library_structures(split, row_key) - set(split.val["inchikey14"])))
     rng = np.random.default_rng([seed, 3])
     decoys = np.sort(rng.choice(eligible, int(round(frac * len(eligible))), replace=False))
-    is_decoy = row_key.reindex(mask["row"].to_numpy()).isin(set(decoys)).to_numpy()
-    new_mask = mask.assign(in_library=mask["in_library"].to_numpy() & ~is_decoy)
-    return Split(val=split.val, library_mask=new_mask), decoys
+    return drop_structures(split, row_key, decoys), decoys
+
+
+def _library_structures(split: Split, row_key: pd.Series) -> set[str]:
+    mask = split.library_mask
+    return set(row_key.reindex(mask.loc[mask["in_library"], "row"].to_numpy()).dropna())
+
+
+def drop_structures(split: Split, row_key: pd.Series, keys: Iterable[str]) -> Split:
+    """``split`` with every library spectrum of the structures ``keys`` removed (the pool is untouched)."""
+    mask = split.library_mask
+    drop = row_key.reindex(mask["row"].to_numpy()).isin(set(keys)).to_numpy()
+    return Split(val=split.val, library_mask=mask.assign(in_library=mask["in_library"].to_numpy() & ~drop))
+
+
+def nn_caps(val: pd.DataFrame, profile: Sequence[float], edges: Sequence[float], seed: int) -> pd.Series:
+    """Split v4: per Class 2 molecule, the upper edge of an nn_tanimoto bin drawn by ``profile``.
+
+    Each source gets bin quotas in proportion to ``profile`` (shares per bin of ``edges``). Removing
+    neighbours can only lower a molecule's nn, so bins are filled from the top, each with a seeded
+    random draw among the molecules whose ``val["nn_tanimoto"]`` reaches the bin's lower edge (all
+    molecules when the column is missing); a shortfall moves to the next lower bin. The last bin has
+    no cap (``inf``).
+    """
+    rng = np.random.default_rng([seed, 4])
+    lower, upper = np.asarray(edges[:-1], dtype=float), np.array([*edges[1:-1], np.inf])
+    target = np.asarray(profile, dtype=float)
+    caps = {}
+    c2 = val[val["class"] == 2].sort_values("molecule_id")
+    nn = c2["nn_tanimoto"] if "nn_tanimoto" in c2.columns else pd.Series(np.inf, index=c2.index)
+    for _, g in c2.assign(nn=nn.fillna(np.inf)).groupby("source", sort=True):
+        quota = _bin_quotas(np.full(len(target), len(g)), target, len(g))
+        free = g.set_index("molecule_id")["nn"]
+        for b in range(len(target) - 1, -1, -1):
+            elig = free.index[free.to_numpy() >= lower[b]] if b else free.index
+            take = rng.choice(np.asarray(elig), min(quota[b], len(elig)), replace=False)
+            if b:
+                quota[b - 1] += quota[b] - len(take)
+            caps.update(dict.fromkeys(take, upper[b]))
+            free = free.drop(take)
+    return pd.Series(caps, name="nn_cap", dtype=float)
+
+
+def neighbour_decoys(split: Split, row_key: pd.Series, caps: pd.Series, fps: np.ndarray,
+                     key_row: Mapping[str, int]) -> tuple[Split, np.ndarray, pd.Series]:
+    """Split v4: library structures with Tanimoto ≥ a Class 2 answer's cap leave the library.
+
+    ``caps`` maps molecule_id → cap (``nn_caps``); ``fps`` / ``key_row`` are the pool's packed Morgan
+    fingerprints and key → row. Validation structures are never removed, and the pool keeps every
+    removed structure as a candidate. Returns the new split, the sorted removed keys and the
+    answers' nn_tanimoto against the remaining library (by molecule_id).
+    """
+    from casmi.difficulty import neighbours_at_least, nn_tanimoto
+
+    val = split.val.set_index("molecule_id")
+    lib = np.array(sorted(k for k in _library_structures(split, row_key) - set(split.val["inchikey14"])
+                          if k in key_row))
+    lib_fps = np.asarray(fps[[key_row[k] for k in lib]])
+    ids = [m for m in caps.index if val.at[m, "inchikey14"] in key_row]
+    answers = val.loc[ids, "inchikey14"].to_numpy()
+    near = neighbours_at_least(np.asarray(fps[[key_row[k] for k in answers]]), caps[ids].to_numpy(), lib_fps)
+    removed = np.unique(lib[np.concatenate(near)]) if near else np.zeros(0, dtype=lib.dtype)
+    keep = ~np.isin(lib, removed)
+    nn = np.zeros(len(answers))
+    if keep.any():
+        nn, _ = nn_tanimoto(np.asarray(fps[[key_row[k] for k in answers]]), list(answers), np.zeros(len(answers)),
+                            lib_fps[keep], list(lib[keep]), np.zeros(int(keep.sum())))
+    return drop_structures(split, row_key, removed), removed, pd.Series(nn, index=ids, name="nn_tanimoto")
 
 
 def candidate_pool_keys(all_keys: Iterable[str], split: Split) -> set[str]:
