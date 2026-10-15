@@ -262,6 +262,8 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     from casmi.ranker import needed_channels, rank_molecule
 
     cfg_r = ranker if "mode" in ranker else {"mode": "weighted", "weights": dict(ranker)}
+    if cfg_r["mode"] == "learned":
+        return run_learned_pipeline(queries, pool, library, index, row_key, cfg_r, cfg, fp_model, in_library, allowed)
     need = needed_channels(cfg_r)
     queries = clean_queries(queries)
     windows = candidate_windows(queries, pool, cfg)
@@ -314,3 +316,47 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     print(f"PubChem tier {tcfg}: used for {n_used} of {len(windows)} molecules", flush=True)
     return preds, channels
 
+
+def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
+                         ranker: Mapping, cfg: PipelineConfig = PipelineConfig(), fp_model=None,
+                         in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
+                         ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
+    """Ranker v2: every channel, per-candidate features, a classifier fitted on ``ranker["train"]``.
+
+    ``ranker``: ``{"mode": "learned", "features": [...], "bags": int, "params": {...}, "train": DataFrame}``
+    (training rows with ``label`` and ``answer``); popularity is read from ``popularity.parquet`` next to
+    the pool.
+    """
+    from casmi.channels.fingerprint import fingerprint_channel
+    from casmi.ranker_v2 import candidate_features, fit_bags, predict, rank_all
+
+    if fp_model is None:
+        raise ValueError("ranker v2 reads the fingerprint channel but no fp_model was given")
+    t0 = time.time()
+    queries = clean_queries(queries).reset_index(drop=True)
+    windows = candidate_windows(queries, pool, cfg)
+    smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
+    hits = analog_hits(queries, index, allowed=allowed, workers=cfg.workers)
+    logits = fingerprint_logits(queries, windows, fp_model)
+    channels: dict[str, ChannelScores] = {
+        "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits),
+        "fingerprint": fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
+                                           workers=cfg.workers),
+        "fingerprint_st": fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
+                                              workers=cfg.workers, how="soft_tanimoto"),
+        "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers),
+    }
+    channels["library"], channels["library_max"] = library_channel(queries, windows, library, cfg, in_library,
+                                                                   both=True)
+    print(f"ranker v2 channels: {time.time() - t0:.0f}s", flush=True)
+    lib = pd.read_parquet(library, columns=["row", "key"])
+    if in_library is not None:
+        lib = lib[lib["row"].map(in_library).fillna(False).to_numpy(dtype=bool)]
+    pop = pd.read_parquet(pool.path / "popularity.parquet")
+    df = candidate_features(queries, windows, channels, hits, row_key, pool.meta, pool.fps, set(lib["key"]), pop)
+    feats = list(ranker["features"])
+    models = fit_bags(ranker["train"], feats, int(ranker.get("bags", 4)), params=ranker.get("params"))
+    ranked = rank_all(df, predict(models, df, feats))
+    print(f"ranker v2: {len(df):,} candidate rows, {len(models)} bags fitted on {len(ranker['train']):,} rows, "
+          f"{time.time() - t0:.0f}s", flush=True)
+    return {m: [smiles_of[k] for k in ranked.get(m, [])] for m in windows}, channels

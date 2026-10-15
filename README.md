@@ -102,6 +102,7 @@ casmi26/
 │   ├── pipeline.py  # end-to-end ranking shared by validation and the Kaggle notebook
 │   ├── harness.py   # load a split's queries / mask / pool, channel scores, MRR@25 per class
 │   ├── ranker.py    # ranker v0 (weighted rank-normalised sum) and v1 (library gate / two-stage)
+│   ├── ranker_v2.py # learned ranker: per-candidate features, bagged HistGradientBoosting fitted in place
 │   ├── difficulty.py # nn_tanimoto / analog counts (blocked matmul), difficulty bins, profile tilt
 │   ├── candidates.py # mass-sorted candidate pool, ppm windows with instrument offset, exclusions
 │   ├── pubchem.py   # reader for the mass-sorted PubChem SMILES index, NP-likeness / scaffold filter
@@ -137,6 +138,8 @@ casmi26/
 | `validation/eval_fragment.py` | `notes/EXP003_fragment_*.md`: fragmentation-channel MRR per class, time per candidate, agreement with the analog channel |
 | `validation/eval_fp.py` | `notes/EXP_fp_<model>.md`: fingerprint channel alone (f·z, soft-Tanimoto) and with the analog channel per class over the v2 seeds; saves fingerprint features |
 | `validation/eval_pubchem_tier.py` | `notes/EXP_pubchem_tier_*.md`, `outputs/tier_v1.json`: PubChem tier (last N slots, gate, popularity prior) — cost on validation, recovery of simulated PubChem-only Class 2 |
+| `validation/ranker_features.py` | `outputs/ranker_features/<split>.parquet`: per-(molecule, candidate) ranker-v2 features for the v2 seeds and the ranker splits r_seed10–14 |
+| `validation/eval_ranker_v2.py` | `notes/EXP_ranker_v2.md`, `outputs/ranker_v2.json`, `outputs/ranker_train/`: learned ranker vs rank average per class over the v2 seeds (training on r_seed10–14) |
 | `validation/eval_pubchem.py` | `notes/EXP011_pubchem_*.md`: recall, candidates, analog C2 cost and the Class 2b (PubChem-only) break-even, old vs PubChem pool |
 | `validation/eval_gate.py` | `notes/EXP010_gate_*.md`, `outputs/ranker_v1.json`: library gate / two-stage vs analog only per class over seeds; saves channel features per split |
 | `validation/eval_ranker.py` | `notes/EXP004_ranker_*.md`, `outputs/ranker_v0.json`: ranker-v0 weights tuned on half A, tested on half B |
@@ -187,6 +190,7 @@ python scripts/make_kaggle_notebook.py --mode combined [--pool pubchem]  # ranke
 python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp_ap.json --fp ap  # + fingerprint channel, T4 GPU
 python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp.json --fp casmi  # our fingerprint model
 python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp.json --fp casmi --pool pubchem --tier outputs/tier_v1.json
+python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_v2.json --fp casmi  # ranker v2, fitted in the notebook
 kaggle kernels push -p kaggle/submission
 kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
     -k red6161/casmi26-submission -v <version> -f submission.csv -m "<message>"

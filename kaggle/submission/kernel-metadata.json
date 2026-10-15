@@ -17,7 +17,8 @@
     "red6161/casmi26-wheels",
     "metric/rdkit-2026-3-3-wheel",
     "red6161/casmi26-analog-index",
-    "red6161/casmi26-fp-model"
+    "red6161/casmi26-fp-model",
+    "red6161/casmi26-ranker-train"
   ],
   "kernel_sources": [],
   "model_sources": [],

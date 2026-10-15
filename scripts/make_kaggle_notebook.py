@@ -11,6 +11,7 @@ layout has changed before), runs ``casmi.pipeline`` on ``test.parquet`` and writ
     python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp_ap.json --fp ap   # GPU
     python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_fp.json --fp casmi    # our model
     python scripts/make_kaggle_notebook.py --mode combined --ranker <json> --fp casmi --pool pubchem --tier outputs/tier_v1.json
+    python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_v2.json --fp casmi   # ranker v2
 
 ``--local-check`` builds a fake ``/kaggle/input`` from symlinks, runs the notebook's
 code cells as a script, validates the CSV and scores it against the placeholder
@@ -122,7 +123,10 @@ else:
         fp_model = CasmiBundle.load(ckpts)
         print(f"fingerprint model {[os.path.basename(c) for c in ckpts]} on {fp_model.device}, "
               f"{time.time() - T0:.0f}s", flush=True)
-    preds, _ = run_combined_pipeline(test, pool, library, index, row_key, CASMI_RANKER, cfg, fp_model=fp_model,
+    ranker = dict(CASMI_RANKER)
+    if ranker.get("mode") == "learned":
+        ranker["train"] = pd.read_parquet(find("ranker_train.parquet"))
+    preds, _ = run_combined_pipeline(test, pool, library, index, row_key, ranker, cfg, fp_model=fp_model,
                                      tier=CASMI_TIER)
 sub = make_submission(preds, sample["molecule_id"].tolist())
 path = write_submission(sub, pathlib.Path(WORK) / "submission.csv")
@@ -165,7 +169,8 @@ def build(out: Path, mode: str = "library", ranker: dict | None = None, pool: st
             "kernel_type": "notebook", "is_private": True, "enable_gpu": fp is not None, "enable_tpu": False,
             "enable_internet": False, "competition_sources": [COMPETITION],
             "dataset_sources": [POOLS[pool][0], *DATASETS] + (["red6161/casmi26-analog-index"] if mode != "library" else [])
-            + (FP_MODELS[fp][0] if fp else []),
+            + (FP_MODELS[fp][0] if fp else []) + (["red6161/casmi26-ranker-train"] if ranker.get("mode") == "learned"
+                                                   else []),
             "kernel_sources": [], "model_sources": [], "keywords": []}
     if fp:
         meta["machine_shape"] = "NvidiaTeslaT4"  # recent PyTorch builds no longer run on the P100
@@ -198,6 +203,7 @@ def local_check(notebook: Path, pool: str = "base", fp: str | None = None) -> No
     }
     if fp:
         links.update({root / name: src for name, src in FP_MODELS[fp][1].items()})
+    links[root / "casmi26-ranker-train"] = WORK_DIR / "ranker_train"
     for dst, src in links.items():
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.is_symlink() or dst.exists():
@@ -240,7 +246,10 @@ def main() -> None:
     ranker = {}
     if args.mode == "combined":
         spec = json.loads(args.ranker.read_text())
-        ranker = spec.get("ranker") or {"mode": "weighted", "weights": spec["weights"]}
+        if "features" in spec:  # ranker v2 (validation/eval_ranker_v2.py): fitted in the notebook
+            ranker = {"mode": "learned", "features": spec["features"], "bags": spec["bags"], "params": spec["params"]}
+        else:
+            ranker = spec.get("ranker") or {"mode": "weighted", "weights": spec["weights"]}
     tier = json.loads(args.tier.read_text())["tier"] if args.tier else None
     notebook = build(args.out, args.mode, ranker, args.pool, args.fp, tier)
     print(f"wrote {notebook} ({notebook.stat().st_size / 1e3:.0f} kB)")

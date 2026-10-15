@@ -4,6 +4,7 @@
 - ``red6161/casmi26-pool-pubchem``: external/pool_pubchem, fingerprints as compressed ``fps.npz``
 - ``red6161/casmi26-library``: outputs/train_clean.parquet
 - ``red6161/casmi26-analog-index``: outputs/analog_index, flattened (``<mode>__<file>``)
+- ``red6161/casmi26-ranker-train``: outputs/ranker_train/ranker_train.parquet (ranker v2 training rows)
 - ``red6161/casmi26-fp-model``: outputs/fp_models/submit/fp_casmi.pt (our fingerprint model)
 - ``red6161/casmi26-wheels``: ms_entropy wheels for CPython 3.10–3.13 (RDKit comes from
   the public ``metric/rdkit-2026-3-3-wheel`` dataset)
@@ -40,6 +41,9 @@ DATASETS = {
                      "Candidate pool extended with NP-like PubChem structures (CC0 mass index by prvsiyan, filtered by "
                      "RDKit NP-likeness / COCONUT scaffolds), deduped by scorer key, mass-sorted; fingerprints "
                      "compressed in fps.npz; PubChem substance / PubMed counts per key (CC0)."),
+    "ranker": ("casmi26-ranker-train", [WORK_DIR / "ranker_train" / "ranker_train.parquet"],
+               "Ranker v2 training rows: per-candidate channel features on five simulated validation splits, with "
+               "the answer flag; the submission notebook fits its classifier from them."),
     "fp": ("casmi26-fp-model", [WORK_DIR / "fp_models" / "submit" / "fp_casmi.pt"],
            "Spectrum-to-fingerprint model (casmi.fpmodel.SpecFormer, casmi6311 bits) trained on the cleaned "
            "competition training spectra; state dict + config, loadable with torch.load(weights_only=True)."),
