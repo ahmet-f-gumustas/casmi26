@@ -203,6 +203,7 @@ kaggle competitions submit -c enveda-CASMI26-molecule-id-mass-spectra \
 | analog only + PubChem pool (2.28M) | 0.258 | 0.424 ± 0.009 (split v2) | 207 s / 5.0 GB (CPU, 4 workers) |
 | analog + prvsiyan FP checkpoints (rank average, CC BY-NC-SA test) | 0.292 | — (trained on all of train) | 261 s / 4.8 GB (T4 GPU) |
 | analog + our SpecFormer FP (rank average) | 0.262 | 0.443 ± 0.012 (split v2; C2 NP 0.567) | 244 s / 4.8 GB (T4 GPU; logits 6.5 s / 1213 spectra) |
+| ranker v2 (learned, all features) + our FP | 0.275 | 0.526 ± 0.013 (split v2; shortcut-inflated, test-like 0.437) | 373 s / 13.3 GB (T4 GPU) |
 | reference: prvsiyan V33 public notebook, unchanged private fork | 0.344 | — | 3879 s (T4 GPU) |
 
 Validation tracks the LB for Class 1 but overestimates Class 2 about twofold. Neither analog difficulty
@@ -210,6 +211,11 @@ Validation tracks the LB for Class 1 but overestimates Class 2 about twofold. Ne
 coverage (adding 1.57M NP-like PubChem isomers costs 0.027 on the LB, as predicted for no PubChem-only answers)
 explains the gap. The reference notebook runs analog propagation, then a PubChem popularity prior, a forward-model
 isomer check (GPU) and a gated PubChem tier in fixed slots; this pipeline has only the first step so far.
+
+A second trap for learned rankers: the pool is COCONUT ∪ training structures, so in a simulation a candidate with
+no library spectra and no COCONUT entry can only be the held-out answer — a shortcut that never occurs on the
+test. `validation/eval_ranker_v2.py` drops it from training and decides on a test-like metric (C1 and the Class 2
+answers that are in COCONUT).
 
 ### Quick usage
 
