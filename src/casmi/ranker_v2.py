@@ -53,10 +53,11 @@ def candidate_features(queries: pd.DataFrame, windows: Mapping[str, list[str]], 
     """
     fp_row = dict(zip(meta["key"], range(len(meta))))
     masses = molecule_masses(queries)
-    top1 = {}
+    top1, sim1 = {}, {}
     for m, idx in queries.groupby("molecule_id").indices.items():
         rows = {fp_row.get(row_key.get(int(hits[i][0][0]))) for i in idx if len(hits[i][0])}
         top1[m] = sorted(r for r in rows if r is not None)
+        sim1[m] = max((float(hits[i][1][0]) for i in idx if len(hits[i][0])), default=0.0)
     parts = []
     for m, keys in windows.items():
         if not keys:
@@ -72,7 +73,7 @@ def candidate_features(queries: pd.DataFrame, windows: Mapping[str, list[str]], 
             "fragment": [ch["fragment"].get(k, 0.0) for k in keys],
             "library_max": [ch["library_max"].get(k, 0.0) for k in keys],
             "library_mean": [ch["library"].get(k, 0.0) for k in keys],
-            "t_analog1": t_an, "n_candidates": len(keys), "mass": float(masses[m]),
+            "t_analog1": t_an, "sim1": sim1.get(m, 0.0), "n_candidates": len(keys), "mass": float(masses[m]),
             "in_library": [k in in_library for k in keys],
         }))
     df = pd.concat(parts, ignore_index=True)

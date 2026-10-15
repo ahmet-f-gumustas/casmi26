@@ -12,7 +12,7 @@ source flags. ``in_library`` is computed from the split's library mask, not from
 so the pool flag would mark every answer; the masked flag mirrors the test, where a Class 2 answer
 has no training spectra.
 
-    python validation/ranker_features.py --model outputs/fp_models/rank_full [--splits ...]
+    python validation/ranker_features.py --model outputs/fp_models/rank_full [--splits ...] [--out <dir>]
 """
 
 from __future__ import annotations
@@ -86,9 +86,10 @@ def main() -> None:
     ap.add_argument("--splits", nargs="+", default=SPLITS)
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--device", default=None, help="fingerprint model device (default: cuda if available)")
+    ap.add_argument("--out", type=Path, default=OUT, help="output folder (default: outputs/ranker_features)")
     args = ap.parse_args()
     t0 = time.time()
-    OUT.mkdir(parents=True, exist_ok=True)
+    args.out.mkdir(parents=True, exist_ok=True)
     model = CasmiBundle.load(sorted(args.model.glob("fp_casmi*.pt")), device=args.device)
     index = AnalogIndex.load(ANALOG_INDEX)
     row_key = library_row_keys(CLEAN_LIBRARY).to_dict()
@@ -97,7 +98,7 @@ def main() -> None:
     n_cache = len(frag_cache)
     for split in args.splits:
         df = split_features(split, model, index, row_key, pop, frag_cache, args.workers)
-        df.to_parquet(OUT / f"{split}.parquet", index=False)
+        df.to_parquet(args.out / f"{split}.parquet", index=False)
         hit = df.groupby("molecule_id")["label"].any()
         print(f"{split}: {df['molecule_id'].nunique()} molecules, {len(df):,} rows, answer in window "
               f"{hit.mean():.1%} ({time.time() - t0:.0f}s)", flush=True)
