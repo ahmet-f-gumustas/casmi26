@@ -267,7 +267,7 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     from casmi.ranker import needed_channels, rank_molecule
 
     cfg_r = ranker if "mode" in ranker else {"mode": "weighted", "weights": dict(ranker)}
-    if cfg_r["mode"] == "learned":
+    if cfg_r["mode"] in ("learned", "combiner"):
         return run_learned_pipeline(queries, pool, library, index, row_key, cfg_r, cfg, fp_model, in_library, allowed)
     need = needed_channels(cfg_r)
     queries = clean_queries(queries)
@@ -347,13 +347,15 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
                          ranker: Mapping, cfg: PipelineConfig = PipelineConfig(), fp_model=None,
                          in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
                          ) -> tuple[dict[str, list[str]], dict[str, ChannelScores]]:
-    """Ranker v2: every channel, per-candidate features, a classifier fitted on ``ranker["train"]``.
+    """Every channel and per-candidate features, then a learned ranker or a combiner.
 
     ``ranker``: ``{"mode": "learned", "features": [...], "bags": int, "params": {...}, "train": DataFrame}``
-    (training rows with ``label`` and ``answer``); popularity is read from ``popularity.parquet`` next to
-    the pool.
+    (ranker v2: a classifier fitted on training rows with ``label`` and ``answer``) or
+    ``{"mode": "combiner", "spec": {...}}`` (``casmi.combiners.combine_rows``); popularity is read from
+    ``popularity.parquet`` next to the pool.
     """
     from casmi.channels.fingerprint import fingerprint_channel
+    from casmi.combiners import combine_rows
     from casmi.ranker_v2 import candidate_features, fit_bags, predict, rank_all
 
     if fp_model is None:
@@ -374,15 +376,19 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     }
     channels["library"], channels["library_max"] = library_channel(queries, windows, library, cfg, in_library,
                                                                    both=True)
-    print(f"ranker v2 channels: {time.time() - t0:.0f}s", flush=True)
+    print(f"feature channels: {time.time() - t0:.0f}s", flush=True)
     lib = pd.read_parquet(library, columns=["row", "key"])
     if in_library is not None:
         lib = lib[lib["row"].map(in_library).fillna(False).to_numpy(dtype=bool)]
     pop = pd.read_parquet(pool.path / "popularity.parquet")
     df = candidate_features(queries, windows, channels, hits, row_key, pool.meta, pool.fps, set(lib["key"]), pop)
-    feats = list(ranker["features"])
-    models = fit_bags(ranker["train"], feats, int(ranker.get("bags", 4)), params=ranker.get("params"))
-    ranked = rank_all(df, predict(models, df, feats))
-    print(f"ranker v2: {len(df):,} candidate rows, {len(models)} bags fitted on {len(ranker['train']):,} rows, "
-          f"{time.time() - t0:.0f}s", flush=True)
+    if ranker["mode"] == "combiner":
+        ranked = rank_all(df, combine_rows(df, ranker["spec"]))
+        print(f"combiner {ranker['spec']['kind']}: {len(df):,} candidate rows, {time.time() - t0:.0f}s", flush=True)
+    else:
+        feats = list(ranker["features"])
+        models = fit_bags(ranker["train"], feats, int(ranker.get("bags", 4)), params=ranker.get("params"))
+        ranked = rank_all(df, predict(models, df, feats))
+        print(f"ranker v2: {len(df):,} candidate rows, {len(models)} bags fitted on {len(ranker['train']):,} rows, "
+              f"{time.time() - t0:.0f}s", flush=True)
     return {m: [smiles_of[k] for k in ranked.get(m, [])] for m in windows}, channels

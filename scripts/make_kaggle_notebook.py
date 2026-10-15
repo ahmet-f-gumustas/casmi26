@@ -13,6 +13,7 @@ layout has changed before), runs ``casmi.pipeline`` on ``test.parquet`` and writ
     python scripts/make_kaggle_notebook.py --mode combined --ranker <json> --fp casmi --pool pubchem --tier outputs/tier_v1.json
     python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/ranker_v2.json --fp casmi   # ranker v2
     python scripts/make_kaggle_notebook.py --mode combined --alt-adducts outputs/alt_adducts_v1.json   # probe 2b
+    python scripts/make_kaggle_notebook.py --mode combined --ranker outputs/combiner_e5.json --fp casmi   # combiner
 
 ``--local-check`` builds a fake ``/kaggle/input`` from symlinks, runs the notebook's
 code cells as a script, validates the CSV and scores it against the placeholder
@@ -208,6 +209,9 @@ def local_check(notebook: Path, pool: str = "base", fp: str | None = None) -> No
     if fp:
         links.update({root / name: src for name, src in FP_MODELS[fp][1].items()})
     links[root / "casmi26-ranker-train"] = WORK_DIR / "ranker_train"
+    for stale in root.iterdir() if root.exists() else []:  # links from an earlier check with other datasets
+        if stale.is_symlink() and stale not in links:
+            stale.unlink()
     for dst, src in links.items():
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.is_symlink() or dst.exists():
@@ -254,6 +258,8 @@ def main() -> None:
         spec = json.loads(args.ranker.read_text())
         if "features" in spec:  # ranker v2 (validation/eval_ranker_v2.py): fitted in the notebook
             ranker = {"mode": "learned", "features": spec["features"], "bags": spec["bags"], "params": spec["params"]}
+        elif "combiner" in spec:  # validation/eval_combiners.py: {"combiner": {"kind": ..., ...}}
+            ranker = {"mode": "combiner", "spec": spec["combiner"]}
         else:
             ranker = spec.get("ranker") or {"mode": "weighted", "weights": spec["weights"]}
     tier = json.loads(args.tier.read_text())["tier"] if args.tier else None
