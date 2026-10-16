@@ -7,7 +7,8 @@ model): validation on v4_seed0–2, training rows (logistic combiner, HGB ranker
 - (a) analog top-K re-rank by α·z(analog) + (1 − α)·z(fp), K ∈ {25, 50, 100}, α ∈ {0.5, 0.7, 0.85};
 - (b) softmax(analog / T1) × softmax(fp / T2) (ranks by analog / T1 + fp / T2);
 - (c) logistic combiner (``casmi.combiners.Logistic``) fitted on the r4 rows;
-- the best of (a)–(c) by NP C2, with the fragment channel added;
+- the best of (a)–(c) by NP C2, with the fragment channel added (v1, and with ``--fragment2`` the v2
+  scores of ``validation/eval_fragment_v2.py`` for the validation splits, as column ``fragment2``);
 - Class 1 protection by rank-1 insertion (``insert_top1``, τ ∈ {0.6, 0.7, 0.8}) on the best combiner:
   the chosen τ loses ≤ ``--c1-loss`` C1 against analog only and no measurable C2;
 - ranker v3: bagged HGB without popularity / source features (fragment and fingerprint features in),
@@ -19,10 +20,13 @@ model): validation on v4_seed0–2, training rows (logistic combiner, HGB ranker
 
 MRR@25 for C1 / C2 / NP C2 (total alongside), mean ± std over seeds; Δ vs rank average and vs analog
 only with the noise labels (C1 ±0.04, C2 / NP C2 ±0.02). Results: ``notes/EXP_combiners_<split>.md``,
-``outputs/combiners_<split>.json`` (the chosen configuration per model).
+``outputs/combiners_<split>.json`` (the chosen configuration per model), every run's MRR in
+``outputs/combiners_<split>_<model>.parquet`` and every configuration in ``..._specs.json``.
 
     python validation/eval_combiners.py --models e5=outputs/ranker_features_e5 e6=outputs/ranker_features_e6
     python validation/eval_combiners.py --models e5=outputs/ranker_features_e5 --val-prefix v3_seed --train-prefix r3_seed
+    python validation/eval_combiners.py --models sim3=outputs/ranker_features_sim3 --val-prefix v5_seed \
+        --train-prefix r5_seed --fragment2 "ablation:depth 3, no losses" --tag v5_sim3
 """
 
 from __future__ import annotations
@@ -89,8 +93,21 @@ def pick(names, mean_of) -> str:
     return max(close, key=lambda n: (mean_of(n, "C1"), mean_of(n, "NP C2")))
 
 
-def evaluate(folder: Path, args: argparse.Namespace) -> tuple[pd.DataFrame, dict]:
+def add_fragment2(df: pd.DataFrame, split: str, setting: str) -> pd.DataFrame:
+    """``df`` with the fragment v2 score of ``setting`` ("<grid>:<name>") as column ``fragment2``."""
+    grid_name, name = setting.split(":", 1)
+    s2 = pd.read_parquet(WORK_DIR / "fragment2" / f"{split}_{grid_name}.parquet",
+                         columns=["molecule_id", "key", f"fragment2 {name}"])
+    out = df.merge(s2.rename(columns={f"fragment2 {name}": "fragment2"}), on=["molecule_id", "key"], how="left")
+    if out["fragment2"].isna().any():
+        raise ValueError(f"{split}: {int(out['fragment2'].isna().sum())} rows without a fragment v2 score")
+    return out
+
+
+def evaluate(folder: Path, args: argparse.Namespace) -> tuple[pd.DataFrame, dict, dict]:
     vals = {s: load(folder, s) for s in args.val}
+    if args.fragment2:
+        vals = {s: (add_fragment2(df, s, args.fragment2), val) for s, (df, val) in vals.items()}
     train = pd.concat([load(folder, s)[0] for s in args.train], ignore_index=True)
     # Every NP example is a validation molecule in every split, so the r4 rows hold the v4 answers too:
     # each validation split is scored by models fitted without its answers. The full fit goes to the notebook.
@@ -115,7 +132,7 @@ def evaluate(folder: Path, args: argparse.Namespace) -> tuple[pd.DataFrame, dict
 
     for name in list(specs):
         run(name, lambda df, s, name=name: score(name, df, s))
-    for col in ("fingerprint", "fragment"):
+    for col in ("fingerprint", "fragment", *(["fragment2"] if args.fragment2 else [])):
         run(f"{col} only", lambda df, s, col=col: df[col].to_numpy())
     add_logistic("(c) logistic", LOGIT_BASE)
 
@@ -133,11 +150,13 @@ def evaluate(folder: Path, args: argparse.Namespace) -> tuple[pd.DataFrame, dict
         extras = {"topk": [(f"{g} fragment", g) for g in (0.1, 0.2, 0.3)],
                   "mixed": [(f"{g} fragment", g) for g in (0.25, 0.5, 1.0)],
                   "product": [(f"fragment T3={t3}", t3) for t3 in (0.05, 0.2)]}[best_spec["kind"]]
-        for label, w in extras:  # top-K / mixed: + w·z(fragment); product: × softmax(fragment / T3)
-            name = f"{best} + {label}"
-            specs[name] = {**best_spec, "extra": {"fragment": w}}
-            run(name, lambda df, s, name=name: score(name, df, s))
-            frag.append(name)
+        columns = {"fragment": "fragment", **({"fragment2": "fragment v2"} if args.fragment2 else {})}
+        for col, shown in columns.items():
+            for label, w in extras:  # top-K / mixed: + w·z(col); product: × softmax(col / T3)
+                name = f"{best} + {label.replace('fragment', shown)}"
+                specs[name] = {**best_spec, "extra": {col: w}}
+                run(name, lambda df, s, name=name: score(name, df, s))
+                frag.append(name)
     best_frag = pick([best, *frag], mean_of)
     for base in dict.fromkeys([best, best_frag]):
         for tau in TAUS:
@@ -156,7 +175,7 @@ def evaluate(folder: Path, args: argparse.Namespace) -> tuple[pd.DataFrame, dict
 
     res = pd.DataFrame(rows)
     choice = choose(res, specs, best_frag, args)
-    return res, choice
+    return res, choice, specs
 
 
 def choose(res: pd.DataFrame, specs: dict, best_frag: str, args: argparse.Namespace) -> dict:
@@ -197,18 +216,22 @@ def main() -> None:
     ap.add_argument("--bags", type=int, default=4)
     ap.add_argument("--val-prefix", default="v4_seed")
     ap.add_argument("--train-prefix", default="r4_seed")
+    ap.add_argument("--fragment2", default=None, metavar="GRID:SETTING",
+                    help='fragment v2 setting added next to v1, e.g. "ablation:depth 3, no losses"')
+    ap.add_argument("--tag", default=None, help="name of the report / json (default: the split, e.g. v5)")
     args = ap.parse_args()
     args.val = [f"{args.val_prefix}{s}" for s in range(3)]
     args.train = [f"{args.train_prefix}{s}" for s in range(10, 15)]
-    tag = args.val_prefix.removesuffix("_seed")
+    tag = args.tag or args.val_prefix.removesuffix("_seed")
     t0 = time.time()
     sections, choices = [], {}
     for item in args.models:
         name, folder = item.split("=", 1)
-        res, choice = evaluate(REPO_ROOT / folder, args)
+        res, choice, specs = evaluate(REPO_ROOT / folder, args)
         res.assign(model=name).to_parquet(WORK_DIR / f"combiners_{tag}_{name}.parquet", index=False)
+        (WORK_DIR / f"combiners_{tag}_{name}_specs.json").write_text(json.dumps(specs, indent=1) + "\n")
         choices[name] = choice
-        sections += [f"## FP v2 {name} ({folder})", md_table(table(res)),
+        sections += [f"## FP {name} ({folder})", md_table(table(res)),
                      f"- choice: **{choice['combiner']}** (C1 {choice['c1']:.3f}, C2 {choice['c2']:.3f}, NP C2 "
                      f"{choice['np_c2']:.3f}); τ meeting C1 loss ≤ {args.c1_loss} and no measurable C2 loss: "
                      f"{choice['tau_ok'] or 'none'}; ranker v3 NP C2 {choice['hgb_np_c2']:.3f} → "

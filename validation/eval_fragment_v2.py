@@ -4,9 +4,9 @@ Per validation split: v2 scores for every (molecule, candidate) row of the featu
 the molecule's spectra) under a few scoring settings, then MRR@25 per class (C1 / C2 / NP C2) for the
 channel alone, for analog + 0.3·z(fragment) (the combiner without fingerprint, kernel v12) and for
 the same with the fingerprint (the Oct 18 combiner), v1 vs v2. Time per candidate is measured. Scores
-go to ``outputs/fragment2/<split>_<grid>.parquet``; the report to ``notes/EXP_fragment_v2[_<grid>].md``. A v2 setting
-whose analog + 0.3·z(fragment) gains ≥ ``--lb-gain`` NP C2 over v1 is written to
-``outputs/fragment2.json``.
+go to ``outputs/fragment2/<split>_<grid>.parquet``; the report to ``notes/EXP_fragment_v2[_<grid>][_<split>].md``
+(the split suffix for prefixes other than v5). A v2 setting whose analog + 0.3·z(fragment) gains
+≥ ``--lb-gain`` NP C2 over v1 is written to ``outputs/fragment2[_<split>].json``.
 
     python validation/eval_fragment_v2.py [--features outputs/ranker_features_e5] [--prefix v5_seed]
 """
@@ -93,6 +93,8 @@ def main() -> None:
     args = ap.parse_args()
     SETTINGS.update(GRIDS[args.grid])
     report_name = "EXP_fragment_v2" if args.grid == "main" else f"EXP_fragment_v2_{args.grid}"
+    suffix = "" if args.prefix == "v5_seed" else f"_{args.prefix.removesuffix('_seed')}"
+    report_name += suffix
     t0 = time.time()
     splits = [f"{args.prefix}{s}" for s in args.seeds]
     feats = {s: pd.read_parquet(REPO_ROOT / args.features / f"{s}.parquet") for s in splits}
@@ -151,11 +153,12 @@ def main() -> None:
     best = max(gains, key=gains.get)
     if gains[best] >= args.lb_gain:
         cfg = SETTINGS[best]
-        (WORK_DIR / "fragment2.json").write_text(json.dumps(
+        (WORK_DIR / f"fragment2{suffix}.json").write_text(json.dumps(
             {"setting": best, "np_c2_gain_vs_v1": round(float(gains[best]), 4),
              "config": {"max_depth": cfg.max_depth, "use_losses": cfg.use_losses, "tol_da": cfg.tol_da,
                         "tol_ppm": cfg.tol_ppm, "sqrt_intensity": cfg.sqrt_intensity}}, indent=2) + "\n")
-        verdict = f"**v2 {best}**: NP C2 {gains[best]:+.3f} over v1 (analog + 0.3·z) → LB queue (outputs/fragment2.json)"
+        verdict = (f"**v2 {best}**: NP C2 {gains[best]:+.3f} over v1 (analog + 0.3·z) → LB queue "
+                   f"(outputs/fragment2{suffix}.json)")
     else:
         verdict = f"best v2 setting {best}: NP C2 {gains[best]:+.3f} over v1 < {args.lb_gain} → not queued"
     report = "\n\n".join([
