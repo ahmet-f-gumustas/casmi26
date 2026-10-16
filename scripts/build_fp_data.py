@@ -8,7 +8,10 @@
   ``struct`` (pool row of its structure; -1 outside the pool's mass range), ``row`` (train row).
 - ``allowed_<name>.npy`` per split family: spectra that are library rows in every split of the
   family (``v2`` = v2_seed0/1/2, so no validation molecule of any seed is trained on; ``rank`` adds
-  the ranker-training splits r_seed10–14).
+  the ranker-training splits r_seed10–14). ``v5sim`` (v5_seed0–2 + r5_seed10–14) ignores the random
+  split-v3 decoys (those structures are library spectra on the test too) but drops every spectrum a
+  split removes otherwise: validation queries and the Class 2 answers' neighbours. A strict
+  intersection would also drop the union of eight decoy draws (~94 % of the structures).
 - ``decoys.npy`` [n_struct, 64] with ``decoy_struct.npy``: per training structure, pool rows in its
   ±10 ppm window (nearest masses first when the window has fewer than 64).
 
@@ -35,7 +38,10 @@ from casmi.harness import CLEAN_LIBRARY
 OUT = WORK_DIR / "fp_data"
 V2 = ["v2_seed0", "v2_seed1", "v2_seed2"]
 # "rank": also the ranker-training splits, so the fingerprint scores there are out-of-sample too
-SPLIT_FAMILIES = {"v2": V2, "rank": V2 + [f"r_seed{s}" for s in range(10, 15)]}
+SPLIT_FAMILIES = {"v2": V2, "rank": V2 + [f"r_seed{s}" for s in range(10, 15)],
+                  "v5sim": [f"v5_seed{s}" for s in range(3)] + [f"r5_seed{s}" for s in range(10, 15)]}
+# split → the split-v3 split whose random decoys it carries (kept in training for these families)
+DECOY_SOURCE = {f"v5_seed{s}": f"v3_seed{s}" for s in range(3)} | {f"r5_seed{s}": f"r3_seed{s}" for s in range(10, 15)}
 N_DECOYS = 64
 COLS = ["row", "key", "precursor_mz", "adduct", "instrument_type", "collision_energy_ev", "ionization_mode",
         "ms2_mzs", "ms2_normalized_intensities"]
@@ -76,10 +82,52 @@ def decoy_table(masses: np.ndarray, structs: np.ndarray, ppm: float = 10.0, k: i
     return out
 
 
+def allowed_mask(rows: np.ndarray, splits: list[str], keep_decoys: bool) -> np.ndarray:
+    """Spectra (by train row) that are library rows in every split; with ``keep_decoys`` a spectrum
+    removed only because its structure is a split-v3 random decoy still counts as a library row."""
+    from casmi.channels.analog import library_row_keys
+    from casmi.harness import CLEAN_LIBRARY
+
+    row_key = library_row_keys(CLEAN_LIBRARY).reindex(rows) if keep_decoys else None
+    allowed = np.ones(len(rows), bool)
+    for split in splits:
+        mask = pd.read_parquet(WORK_DIR / "splits" / split / "library_mask.parquet", columns=["row", "in_library"])
+        ok = pd.Series(mask["in_library"].to_numpy(), index=mask["row"]).reindex(rows).fillna(False).to_numpy(bool).copy()
+        if keep_decoys and split in DECOY_SOURCE:
+            decoys = set(pd.read_parquet(WORK_DIR / "splits" / DECOY_SOURCE[split] / "decoy_keys.parquet")["key"])
+            src = pd.read_parquet(WORK_DIR / "splits" / DECOY_SOURCE[split] / "library_mask.parquet",
+                                  columns=["row", "in_library"])
+            before = pd.Series(src["in_library"].to_numpy(), index=src["row"]).reindex(rows).fillna(False).to_numpy(bool)
+            # a decoy row is in the library of the split v2 the v3 split came from, so it is restored when the
+            # v3 split dropped it as a decoy and the v5 split did not drop it as a neighbour of an answer
+            neighbours = set(pd.read_parquet(WORK_DIR / "splits" / split / "neighbour_keys.parquet")["key"])
+            is_decoy = row_key.isin(decoys).to_numpy() & ~row_key.isin(neighbours).to_numpy()
+            ok |= is_decoy & ~before  # removed only as a decoy
+        allowed &= ok
+    return allowed
+
+
+def masks_only(families: list[str]) -> None:
+    """Recompute ``allowed_<family>.npy`` from the saved ``row.npy`` / ``struct.npy``."""
+    rows, struct = np.load(OUT / "row.npy"), np.load(OUT / "struct.npy")
+    for family in families:
+        splits = SPLIT_FAMILIES[family]
+        for keep, name in ((False, f"{family} (strict intersection)"), (True, family)):
+            allowed = allowed_mask(rows, splits, keep_decoys=keep)
+            n_struct = len(np.unique(struct[allowed & (struct >= 0)]))
+            print(f"allowed {name}: {allowed.sum():,} spectra, {n_struct:,} structures", flush=True)
+        np.save(OUT / f"allowed_{family}.npy", allowed)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--workers", type=int, default=24)
+    ap.add_argument("--masks-only", nargs="+", default=None, metavar="FAMILY",
+                    help="only recompute allowed_<family>.npy from the saved arrays")
     args = ap.parse_args()
+    if args.masks_only:
+        masks_only(args.masks_only)
+        return
     t0 = time.time()
     OUT.mkdir(parents=True, exist_ok=True)
 
@@ -109,11 +157,7 @@ def main() -> None:
           f"{time.time() - t0:.0f}s", flush=True)
 
     for family, splits in SPLIT_FAMILIES.items():
-        allowed = np.ones(len(cat["row"]), bool)
-        for split in splits:
-            mask = pd.read_parquet(WORK_DIR / "splits" / split / "library_mask.parquet", columns=["row", "in_library"])
-            allowed &= pd.Series(mask["in_library"].to_numpy(), index=mask["row"]).reindex(cat["row"]).fillna(
-                False).to_numpy(bool)
+        allowed = allowed_mask(cat["row"], splits, keep_decoys=family == "v5sim")
         np.save(OUT / f"allowed_{family}.npy", allowed)
         print(f"allowed_{family}: {allowed.sum():,} spectra, {len(np.unique(cat['struct'][allowed])):,} structures")
 
