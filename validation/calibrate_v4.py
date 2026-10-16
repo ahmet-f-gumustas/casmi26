@@ -36,11 +36,14 @@ SHORT = {c: c.split(")")[0] + ")" if c.startswith("(") else "hit" for c in CLUST
 
 
 def build(profile: str, seed: int) -> str:
-    """``a,b,c,d``: neighbour removal from v3_seed<N>; ``d<f>``: random decoy fraction f from v2_seed<N>."""
+    """``a,b,c,d``: neighbour profile from v3_seed<N>; ``d<f>``: random decoy fraction f from v2_seed<N>;
+    ``t<x>``: every Class 2 answer's neighbours at Tanimoto ≥ x removed from v3_seed<N> (split v5)."""
     name = f"v4scan_{profile.replace(',', '-')}_seed{seed}"
     out = WORK_DIR / "splits" / name
     if profile.startswith("d"):
         how = ["--decoys-from", f"v2_seed{seed}", "--decoy-frac", profile[1:]]
+    elif profile.startswith("t"):  # split v5: one neighbour cap for every Class 2 answer
+        how = ["--v4-from", f"v3_seed{seed}", "--cap", profile[1:]]
     else:
         how = ["--v4-from", f"v3_seed{seed}", "--profile", *profile.split(",")]
     if not (out / "val_ids.parquet").exists():

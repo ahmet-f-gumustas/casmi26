@@ -8,8 +8,11 @@ model of that submission (``outputs/fp_models/rank_full``):
 - rank average of analog and our fingerprint channel: 0.262 (Δ −0.023 vs analog only).
 
 Per split family: MRR@25 per class for both (mean over seeds), the implied LB
-``0.16·C1 + 0.45·C2`` (Class 3 scores 0) with C2 taken over all Class 2 or over the NP subset, and the
-implied Δ next to the LB Δ. Report: ``notes/BACKTEST_LB.md``.
+``0.16·C1 + 0.45·C2`` (Class 3 scores 0) with C2 taken over the NP subset (the test is natural
+products; all Class 2 is shown too), and the implied Δ next to the LB Δ. A family passes when its
+implied analog-only LB is within ``--tol-level`` of 0.285 and its implied Δ within ``--tol-delta`` of
+−0.023; the chosen family passes both or, failing that, has the smallest error in tolerance units.
+Report: ``notes/BACKTEST_LB.md``.
 
     python validation/backtest_lb.py --families v2=outputs/ranker_features:v2_seed v4=outputs/ranker_features_rankfull:v4_seed
 """
@@ -44,6 +47,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--families", nargs="+", required=True, help="name=feature folder:split prefix")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    ap.add_argument("--tol-level", type=float, default=0.02)
+    ap.add_argument("--tol-delta", type=float, default=0.015)
+    ap.add_argument("--name", default="BACKTEST_LB")
     args = ap.parse_args()
     rows = []
     for item in args.families:
@@ -65,14 +71,22 @@ def main() -> None:
                      "implied Δ (C2)": implied["rank average"]["C2"] - implied["analog only"]["C2"],
                      "implied Δ (NP C2)": implied["rank average"]["NP C2"] - implied["analog only"]["NP C2"]})
     tab = pd.DataFrame(rows)
+    lb_delta = LB["rank average"] - LB["analog only"]
+    tab["level error"] = tab["implied LB analog (NP C2)"] - LB["analog only"]
+    tab["Δ error"] = tab["implied Δ (NP C2)"] - lb_delta
+    tab["passes"] = (tab["level error"].abs() <= args.tol_level) & (tab["Δ error"].abs() <= args.tol_delta)
+    tab["error (tolerance units)"] = (tab["level error"].abs() / args.tol_level + tab["Δ error"].abs() / args.tol_delta)
+    best = tab.sort_values(["passes", "error (tolerance units)"], ascending=[False, True]).iloc[0]
+    verdict = (f"**{best['split']}** {'passes both' if best['passes'] else 'is the closest (passes neither fully)'}: "
+               f"level error {best['level error']:+.3f}, Δ error {best['Δ error']:+.3f}")
     report = "\n\n".join([
         "# LB backtest of the validation splits",
         f"- LB: analog only {LB['analog only']}, rank average (analog + our FP, rank_full) {LB['rank average']} "
-        f"(Δ {LB['rank average'] - LB['analog only']:+.3f}); implied LB = 0.16·C1 + 0.45·C2 (Class 3 = 0); seeds "
-        f"{args.seeds}",
-        md_table(tab.round(3)),
+        f"(Δ {lb_delta:+.3f}); implied LB = 0.16·C1 + 0.45·C2 (Class 3 = 0); targets: level ± {args.tol_level}, "
+        f"Δ ± {args.tol_delta} (NP C2); seeds {args.seeds}",
+        md_table(tab.round(3)), f"- choice: {verdict}",
     ]) + "\n"
-    (REPO_ROOT / "notes" / "BACKTEST_LB.md").write_text(report)
+    (REPO_ROOT / "notes" / f"{args.name}.md").write_text(report)
     print(report)
 
 
