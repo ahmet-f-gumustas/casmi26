@@ -16,7 +16,7 @@ library scores of their ranker features (``casmi.harness.CachedSplit``) under th
 rank average (``--eval-rule``); the epoch with the best mean Class 2 NP MRR is kept as
 ``fp_casmi.pt`` (every epoch is saved as ``epoch_<n>.pt``), and ``--patience`` epochs without a
 gain stop training. ``--stop-after`` ends a run early while the LR schedule still spans ``--epochs``
-(the final model replays the selected epoch count).
+(the final model replays the selected epoch count); ``--save-epochs`` keeps every epoch without evaluation.
 
     python scripts/train_fp.py --out outputs/fp_models/smoke --subset 200000 --max-minutes 60
     python scripts/train_fp.py --out outputs/fp_models/v2_full --epochs 1
@@ -179,6 +179,7 @@ def main() -> None:
     ap.add_argument("--eval-rule", default="switch", help="C1 protection rule of the evaluated rank average")
     ap.add_argument("--patience", type=int, default=None)
     ap.add_argument("--stop-after", type=float, default=None, help="epochs to run (default: --epochs)")
+    ap.add_argument("--save-epochs", action="store_true", help="save epoch_<n>.pt without --eval-splits too")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(args.seed)
@@ -261,6 +262,8 @@ def main() -> None:
                 break
         epoch += 1
         if evaluator is None:
+            if args.save_epochs:
+                torch.save(checkpoint(), args.out / f"epoch_{epoch}.pt")
             continue
         torch.save(checkpoint(), args.out / f"epoch_{epoch}.pt")
         res = evaluator(model, dev)
