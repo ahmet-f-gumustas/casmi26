@@ -156,6 +156,7 @@ casmi26/
 | `validation/eval_library.py` | `notes/EXP001_library.md`: library-channel MRR@25 per class / source (needs `.[ml]`) |
 | `scripts/make_kaggle_notebook.py` | `kaggle/submission/`: submission notebook with `casmi` embedded; `--local-check` runs it on the placeholder test |
 | `scripts/kaggle_datasets.py` | stages and uploads the Kaggle datasets above |
+| `scripts/lb_job.py` | cron jobs on an always-on machine: idempotent, retried `submit <version> <message>`; `log` appends completed scores to `runs/lb_log.md` |
 | `validation/make_split.py` | `outputs/splits/{seedN,v2_seedN,v3_seedN,v4_seedN,final}/`: `val_ids.parquet`, `library_mask.parquet`, `config.json`; `--difficulty` = split v2, `--decoys-from` = split v3 (+ `decoy_keys.parquet`), `--v4-from --profile` = split v4 (+ `neighbour_keys.parquet`) |
 
 ### Validation split
@@ -179,6 +180,10 @@ describes it (timsTOF, the 10 test adducts, 157–1,159 Da), with the chemistry,
   instead each Class 2 answer gets a bin and its library neighbours at or above the bin's upper edge leave the
   library (they stay in the pool). `validation/calibrate_v4.py` picked 60 / 35 / 5 / 0: analog-only C2 0.330
   (C1 0.907, NP C2 0.219), close to the C2 the leaderboard implies (~0.32–0.34).
+- `--v4-from v3_seedN --cap 0.6` (split v5, the current decision split) removes every Class 2 answer's library
+  neighbours at Tanimoto ≥ 0.6. Picked by `validation/backtest_lb.py` among caps 0.6–0.9: it implies the analog-only
+  LB (0.303 vs 0.285), but no cap also reproduces the rank-average result (−0.023); v5 implies +0.026. The fingerprint
+  model was trained on the removed neighbours' spectra, so the simulation still favours it; v3 stays as reference.
 
 | Class | Share | Library (`in_library`) | Candidate pool |
 |---|---|---|---|
