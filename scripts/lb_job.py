@@ -1,11 +1,15 @@
-"""Leaderboard jobs for cron: submit a kernel version and log public scores.
+"""Leaderboard jobs for cron: an ordered submission queue and a score log.
 
 ``submit``: submits a version of the submission kernel unless a submission with the same message
 exists already (so a rerun never spends a second slot), retries while the network is down, and
-confirms the submission in the submissions list. ``log``: appends every completed submission not
-yet in ``runs/lb_log.md`` with its public score and the difference to analog only (0.285).
+confirms the submission in the submissions list. ``add`` appends a version to ``runs/lb_queue.json``;
+``queue`` (run from cron) submits the first queued entry not on the leaderboard yet, once per run and
+only while fewer than ``--per-day`` submissions were made that UTC day. ``log`` appends every completed
+submission not yet in ``runs/lb_log.md`` with its public score and the difference to analog only (0.285).
 
-    python scripts/lb_job.py submit 9 "recall probe 2a: ..."
+    python scripts/lb_job.py add 12 "combiner without FP: ..."
+    python scripts/lb_job.py queue
+    python scripts/lb_job.py list
     python scripts/lb_job.py log
 """
 
@@ -26,6 +30,7 @@ KERNEL = "red6161/casmi26-submission"
 ANALOG_ONLY = 0.285
 RUNS = REPO / "runs"
 LOG = RUNS / "lb_log.md"
+QUEUE = RUNS / "lb_queue.json"
 HEADER = ("# Leaderboard log\n\n| ref | submitted (UTC) | description | public | Δ vs analog only 0.285 |\n"
           "|---|---|---|---|---|\n")
 
@@ -62,6 +67,43 @@ def submit(version: int, message: str, tries: int, wait: int) -> int:
     return 1
 
 
+def load_queue() -> list[dict]:
+    return json.loads(QUEUE.read_text()) if QUEUE.exists() else []
+
+
+def add(version: int, message: str) -> int:
+    q = load_queue()
+    if any(e["message"] == message for e in q):
+        print(f"{now()} v{version}: already queued", flush=True)
+        return 0
+    q.append({"version": version, "message": message, "added": now()})
+    RUNS.mkdir(exist_ok=True)
+    QUEUE.write_text(json.dumps(q, indent=1) + "\n")
+    print(f"{now()} v{version}: queued at position {len(q)}", flush=True)
+    return 0
+
+
+def queue(per_day: int) -> int:
+    subs = submissions()
+    done = {s["description"] for s in subs}
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    used = sum(s["date"].startswith(today) for s in subs)
+    pending = [e for e in load_queue() if e["message"] not in done]
+    if not pending or used >= per_day:
+        return 0
+    e = pending[0]
+    return submit(e["version"], e["message"], tries=20, wait=90)
+
+
+def show() -> int:
+    done = {s["description"]: s for s in submissions()}
+    for i, e in enumerate(load_queue(), 1):
+        s = done.get(e["message"])
+        state = f"submitted {s['date'][:16]} → {s['publicScore'] or s['status'].split('.')[-1]}" if s else "pending"
+        print(f"{i}. v{e['version']} [{state}] {e['message']}")
+    return 0
+
+
 def log() -> int:
     RUNS.mkdir(exist_ok=True)
     text = LOG.read_text() if LOG.exists() else HEADER
@@ -84,9 +126,21 @@ def main() -> None:
     s.add_argument("message")
     s.add_argument("--tries", type=int, default=20)
     s.add_argument("--wait", type=int, default=90, help="seconds between attempts")
+    a = sub.add_parser("add")
+    a.add_argument("version", type=int)
+    a.add_argument("message")
+    qp = sub.add_parser("queue")
+    qp.add_argument("--per-day", type=int, default=2)
+    sub.add_parser("list")
     sub.add_parser("log")
     args = ap.parse_args()
-    sys.exit(submit(args.version, args.message, args.tries, args.wait) if args.cmd == "submit" else log())
+    if args.cmd == "submit":
+        sys.exit(submit(args.version, args.message, args.tries, args.wait))
+    if args.cmd == "add":
+        sys.exit(add(args.version, args.message))
+    if args.cmd == "queue":
+        sys.exit(queue(args.per_day))
+    sys.exit(show() if args.cmd == "list" else log())
 
 
 if __name__ == "__main__":
