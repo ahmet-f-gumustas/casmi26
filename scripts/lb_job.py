@@ -3,8 +3,9 @@
 ``submit``: submits a version of the submission kernel unless a submission with the same message
 exists already (so a rerun never spends a second slot), retries while the network is down, and
 confirms the submission in the submissions list. ``add`` appends a version to ``runs/lb_queue.json``;
-``queue`` (run from cron) submits the first queued entry not on the leaderboard yet, once per run and
-only while fewer than ``--per-day`` submissions were made that UTC day. ``log`` appends every completed
+``queue`` (run from cron) submits the queued entries not on the leaderboard yet, in order, as many as
+``--per-day`` minus the submissions already made that UTC day (default: the competition's limit of 5,
+so the queue drains as soon as Kaggle allows). ``log`` appends every completed
 submission not yet in ``runs/lb_log.md`` with its public score and the difference to analog only (0.285).
 
     python scripts/lb_job.py add 12 "combiner without FP: ..."
@@ -89,10 +90,10 @@ def queue(per_day: int) -> int:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     used = sum(s["date"].startswith(today) for s in subs)
     pending = [e for e in load_queue() if e["message"] not in done]
-    if not pending or used >= per_day:
-        return 0
-    e = pending[0]
-    return submit(e["version"], e["message"], tries=20, wait=90)
+    for e in pending[:max(per_day - used, 0)]:
+        if submit(e["version"], e["message"], tries=20, wait=90):
+            return 1
+    return 0
 
 
 def show() -> int:
@@ -130,7 +131,7 @@ def main() -> None:
     a.add_argument("version", type=int)
     a.add_argument("message")
     qp = sub.add_parser("queue")
-    qp.add_argument("--per-day", type=int, default=2)
+    qp.add_argument("--per-day", type=int, default=5)
     sub.add_parser("list")
     sub.add_parser("log")
     args = ap.parse_args()
