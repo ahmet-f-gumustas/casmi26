@@ -70,3 +70,11 @@ def test_mixed_is_scale_free_in_the_fingerprint() -> None:
     assert a == rank_all(scaled, mixed(scaled, 0.1, 1.0))
     assert rank_all(df, combine_rows(df, {"kind": "mixed", "t1": 0.1, "w": 1.0})) == a
     assert rank_all(df, mixed(df, 1e-6, 1.0))["m1"] == ["A", "B", "C", "D"]
+
+
+def test_topk_without_fingerprint_ignores_it() -> None:
+    df = rows()
+    spec = {"kind": "topk", "k": 100, "alpha": 0.5, "fp": None, "extra": {"fragment": 0.3}}
+    a = rank_all(df, combine_rows(df, spec))
+    assert a == rank_all(df.assign(fingerprint=-df["fingerprint"]), combine_rows(df.assign(fingerprint=0.0), spec))
+    assert a["m1"] == rank_all(df, 0.5 * zscore(df, "analog") + 0.3 * zscore(df, "fragment"))["m1"]

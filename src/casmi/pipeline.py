@@ -358,22 +358,23 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     from casmi.combiners import combine_rows
     from casmi.ranker_v2 import candidate_features, fit_bags, predict, rank_all
 
-    if fp_model is None:
-        raise ValueError("ranker v2 reads the fingerprint channel but no fp_model was given")
+    if fp_model is None and (ranker["mode"] != "combiner" or ranker["spec"].get("fp", "fingerprint") is not None):
+        raise ValueError("the ranker reads the fingerprint channel but no fp_model was given")
     t0 = time.time()
     queries = clean_queries(queries).reset_index(drop=True)
     windows = candidate_windows(queries, pool, cfg)
     smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
     hits = analog_hits(queries, index, allowed=allowed, workers=cfg.workers)
-    logits = fingerprint_logits(queries, windows, fp_model)
     channels: dict[str, ChannelScores] = {
         "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits),
-        "fingerprint": fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
-                                           workers=cfg.workers),
-        "fingerprint_st": fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
-                                              workers=cfg.workers, how="soft_tanimoto"),
+        "fingerprint": {}, "fingerprint_st": {},
         "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers),
     }
+    if fp_model is not None:
+        logits = fingerprint_logits(queries, windows, fp_model)
+        for name, how in (("fingerprint", "dot"), ("fingerprint_st", "soft_tanimoto")):
+            channels[name] = fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
+                                                 workers=cfg.workers, how=how)
     channels["library"], channels["library_max"] = library_channel(queries, windows, library, cfg, in_library,
                                                                    both=True)
     print(f"feature channels: {time.time() - t0:.0f}s", flush=True)

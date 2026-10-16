@@ -46,10 +46,13 @@ def analog_rank(df: pd.DataFrame) -> np.ndarray:
     return rank
 
 
-def topk_rerank(df: pd.DataFrame, k: int, alpha: float, fp: str = "fingerprint",
+def topk_rerank(df: pd.DataFrame, k: int, alpha: float, fp: str | None = "fingerprint",
                 extra: Mapping[str, float] | None = None) -> np.ndarray:
-    """Analog top-``k`` re-ranked by α·z(analog) + (1 − α)·z(``fp``) (+ Σ w·z(col) for ``extra``)."""
-    s = alpha * zscore(df, "analog") + (1 - alpha) * zscore(df, fp)
+    """Analog top-``k`` re-ranked by α·z(analog) + (1 − α)·z(``fp``) (+ Σ w·z(col) for ``extra``);
+    ``fp=None`` drops the fingerprint term."""
+    s = alpha * zscore(df, "analog")
+    if fp is not None:
+        s = s + (1 - alpha) * zscore(df, fp)
     for col, w in (extra or {}).items():
         s = s + w * zscore(df, col)
     r = analog_rank(df)
