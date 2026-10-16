@@ -46,11 +46,17 @@ POOLS = {"base": ("red6161/casmi26-pool", POOL_DIR),
 OUT = REPO_ROOT / "kaggle" / "submission"
 # Fingerprint models, attached as published (not re-uploaded): name -> (datasets, local folders).
 # "ap": prvsiyan's FPNet checkpoints (CC BY-NC-SA 4.0) and the fp_bits.npy column order; see NOTICE.
-# "casmi": our SpecFormer (scripts/train_fp.py), uploaded as red6161/casmi26-fp-model.
+# "casmi": our SpecFormer (scripts/train_fp.py), uploaded as red6161/casmi26-fp-model; "final_same" /
+# "final_big": the same model trained on all data, uploaded as red6161/casmi26-fp-final-{same,big}.
 FP_MODELS = {"ap": (["prvsiyan/casmi26-fp-models-v2", "prvsiyan/coconut-casmi26-candidates"],
                     {"casmi26-fp-models-v2": REPO_ROOT / "external" / "prvsiyan" / "fp_models_v2",
                      "coconut-casmi26-candidates": REPO_ROOT / "external" / "prvsiyan" / "coconut_fp_bits"}),
-             "casmi": (["red6161/casmi26-fp-model"], {"casmi26-fp-model": WORK_DIR / "fp_models" / "submit"})}
+             "casmi": (["red6161/casmi26-fp-model"], {"casmi26-fp-model": WORK_DIR / "fp_models" / "submit"}),
+             # final models on all data (plan item E), one dataset per recipe
+             "final_same": (["red6161/casmi26-fp-final-same"],
+                            {"casmi26-fp-final-same": WORK_DIR / "fp_models" / "final_same"}),
+             "final_big": (["red6161/casmi26-fp-final-big"],
+                           {"casmi26-fp-final-big": WORK_DIR / "fp_models" / "final_big"})}
 
 SETUP = r'''
 import glob, os, subprocess, sys, time, resource
@@ -149,7 +155,8 @@ def package_b64() -> str:
 
 def code_cells(mode: str, ranker: dict, fp: str | None = None, tier: dict | None = None,
                alt: dict | None = None) -> list[str]:
-    config = (f"CASMI_MODE = {mode!r}\nCASMI_RANKER = {ranker!r}\nCASMI_FP = {fp!r}\nCASMI_TIER = {tier!r}\n"
+    kind = fp if fp in (None, "ap") else "casmi"  # every model of ours is a SpecFormer checkpoint
+    config = (f"CASMI_MODE = {mode!r}\nCASMI_RANKER = {ranker!r}\nCASMI_FP = {kind!r}\nCASMI_TIER = {tier!r}\n"
               f"CASMI_ALT = {alt!r}\n")
     return [SETUP.strip(), f"CASMI_TGZ_B64 = {package_b64()!r}\n" + UNPACK.strip(), config + RUN.strip()]
 

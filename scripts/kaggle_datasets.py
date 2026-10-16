@@ -6,6 +6,7 @@
 - ``red6161/casmi26-analog-index``: outputs/analog_index, flattened (``<mode>__<file>``)
 - ``red6161/casmi26-ranker-train``: outputs/ranker_train/ranker_train.parquet (ranker v2 training rows)
 - ``red6161/casmi26-fp-model``: outputs/fp_models/submit/fp_casmi.pt (our fingerprint model)
+- ``red6161/casmi26-fp-final-same`` / ``-big``: outputs/fp_models/final_{same,big}/fp_casmi.pt (on all data)
 - ``red6161/casmi26-wheels``: ms_entropy wheels for CPython 3.10–3.13 (RDKit comes from
   the public ``metric/rdkit-2026-3-3-wheel`` dataset)
 
@@ -47,6 +48,13 @@ DATASETS = {
     "fp": ("casmi26-fp-model", [WORK_DIR / "fp_models" / "submit" / "fp_casmi.pt"],
            "Spectrum-to-fingerprint model (casmi.fpmodel.SpecFormer, casmi6311 bits) trained on the cleaned "
            "competition training spectra; state dict + config, loadable with torch.load(weights_only=True)."),
+    "fp_final_same": ("casmi26-fp-final-same", [WORK_DIR / "fp_models" / "final_same" / "fp_casmi.pt"],
+                      "Final spectrum-to-fingerprint model (casmi.fpmodel.SpecFormer) on all cleaned training spectra: "
+                      "d 512, NP weight 3, 3 epochs of a 12-epoch schedule; loadable with "
+                      "torch.load(weights_only=True)."),
+    "fp_final_big": ("casmi26-fp-final-big", [WORK_DIR / "fp_models" / "final_big" / "fp_casmi.pt"],
+                     "Final spectrum-to-fingerprint model (casmi.fpmodel.SpecFormer) on all cleaned training spectra: "
+                     "d 768, NP weight 5, 20 epochs; loadable with torch.load(weights_only=True)."),
     "library": ("casmi26-library", [WORK_DIR / "train_clean.parquet"],
                 "Competition training spectra cleaned like the test: peaks above precursor + 2 Da removed, base "
                 "peak < 1000 dropped, precursor checked against the labelled structure (|ppm| <= 20)."),
