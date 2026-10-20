@@ -62,3 +62,4 @@ def test_frame_builds_one_row_per_candidate() -> None:
                       {"m": {"A": 0.6}}, None, None)
     assert len(df) == 2 and df.loc[0, "lv"] > 0 and df.loc[1, "lv"] == 0 and (df["top_sim"] > 0.79).all()
     assert df.loc[0, "best_tan"] > df.loc[1, "best_tan"]  # ethyl vs methyl benzoate are closer than the acetate
+

@@ -46,6 +46,7 @@ FEATURES = ["lv", "lv_rank", "lv_max", "lv_minus_max", "lv_pos", "ap", "ap_rank"
             "f", "f_rank", "f_minus_max", "f_z",
             "x_lv_mr", "x_ap_mr", "x_agree", "x_agree_a", "x_agree_lvmax", "x_corr"]
 DROP = ("m_minus_max",)
+SOURCE = "src_pubchem"  # 1 for a PubChem-only candidate joined by casmi.pipeline.pubchem_join
 USED = [f for f in FEATURES if f not in DROP]
 N_ANALOG = 80
 P_SIM = 3.0
@@ -347,3 +348,4 @@ def proba(models: Sequence, X: NDArray) -> NDArray[np.float64]:
 def columns(names: Sequence[str] = USED) -> list[int]:
     """Column indices of ``names`` in the full ``FEATURES`` matrix (``rank_train.npz`` order)."""
     return [FEATURES.index(n) for n in names]
+

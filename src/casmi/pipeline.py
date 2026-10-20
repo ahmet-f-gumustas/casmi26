@@ -253,6 +253,44 @@ def fingerprint_scores(queries: pd.DataFrame, windows: Mapping[str, list[str]], 
                                model.bits, workers=workers, cache=cache, how=how)
 
 
+def pubchem_join(queries: pd.DataFrame, windows: Mapping[str, list[str]], pool: CandidatePool, index,
+                 row_key: Mapping[int, str], hits: list, logits: Mapping[str, np.ndarray] | None, fp_model,
+                 top: int, allowed: np.ndarray | None = None,
+                 workers: int = 1) -> tuple[dict[str, list[str]], set[str]]:
+    """Base-pool candidates (train ∪ COCONUT) plus the ``top`` PubChem-only candidates per molecule.
+
+    ``pool`` is the PubChem pool (NP-likeness > 0 already). PubChem-only candidates of a window are
+    pre-screened by z(analog) + z(f·z) within that part of the window (z per molecule; only the analog
+    term without a model). Returns the joined windows and the joined PubChem keys.
+    """
+    from casmi.channels.fingerprint import fingerprint_channel
+
+    meta = pool.meta
+    base = set(meta.loc[meta["in_train"] | meta["in_coconut"], "key"])
+    pub = {m: [k for k in ks if k not in base] for m, ks in windows.items()}
+    smiles_of = dict(zip(meta["key"], meta["smiles"]))
+    a = analog_channel(queries, pub, pool, index, row_key, allowed=allowed, hits=hits)
+    f = (fingerprint_channel(logits, pub, smiles_of, fp_model.layout, fp_model.bits, workers=workers)
+         if logits else {})
+
+    def z(v: np.ndarray) -> np.ndarray:
+        s = v.std()
+        return (v - v.mean()) / s if s > 1e-12 else np.zeros_like(v)
+
+    out, joined = {}, set()
+    for m, ks in windows.items():
+        p = pub[m]
+        keep: list[str] = []
+        if p:
+            s = z(np.array([a.get(m, {}).get(k, 0.0) for k in p]))
+            if m in f:
+                s = s + z(np.array([f[m].get(k, 0.0) for k in p]))
+            keep = [p[i] for i in np.argsort(-s, kind="stable")[:top]]
+        out[m] = [k for k in ks if k in base] + keep
+        joined.update(keep)
+    return out, joined
+
+
 def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
                           ranker: Mapping, cfg: PipelineConfig = PipelineConfig(),
                           in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
@@ -356,8 +394,10 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     ``ranker``: ``{"mode": "learned", "features": [...], "bags": int, "params": {...}, "train": DataFrame}``
     (ranker v2: a classifier fitted on training rows with ``label`` and ``answer``),
     ``{"mode": "combiner", "spec": {...}}`` (``casmi.combiners.combine_rows``) or
-    ``{"mode": "rank31", "train": (X, Y, M), ["features": [...], "priors": [...], "seeds": [...]]}``
-    (``casmi.rank31``: the V33 features and ranker, fitted on rows in ``rank_train.npz`` format);
+    ``{"mode": "rank31", "train": (X, Y, M), ["features": [...], "priors": [...], "seeds": [...],
+    "pubchem_join": {"top": N}]}`` (``casmi.rank31``: the V33 features and ranker, fitted on rows in
+    ``rank_train.npz`` format; with ``pubchem_join`` and the PubChem pool, ``pubchem_join`` adds N
+    PubChem-only candidates per molecule and the ranker gets their source as ``src_pubchem``);
     popularity is read from ``popularity.parquet`` next to the pool.
     """
     from casmi import rank31
@@ -378,14 +418,21 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     # rank31 builds its analog list from more hits per spectrum; the analog channel reads the first top_k
     acfg = AnalogConfig(top_k=rank31.ANALOG_TOP_K) if ranker["mode"] == "rank31" else None
     hits = analog_hits(queries, index, cfg=acfg, allowed=allowed, workers=cfg.workers)
+    logits = fingerprint_logits(queries, windows, fp_model) if fp_model is not None else None
+    join = ranker.get("pubchem_join") if ranker["mode"] == "rank31" else None
+    joined: set[str] = set()
+    if join:
+        n_before = sum(map(len, windows.values()))
+        windows, joined = pubchem_join(queries, windows, pool, index, row_key, hits, logits, fp_model,
+                                       int(join["top"]), allowed, cfg.workers)
+        print(f"PubChem join: {len(joined):,} PubChem-only candidates added (top {join['top']} per molecule); "
+              f"{n_before:,} → {sum(map(len, windows.values())):,} window rows, {time.time() - t0:.0f}s", flush=True)
     channels: dict[str, ChannelScores] = {
         "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits),
         "fingerprint": {}, "fingerprint_st": {},
         "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers),
     }
-    logits = None
     if fp_model is not None:
-        logits = fingerprint_logits(queries, windows, fp_model)
         for name, how in (("fingerprint", "dot"), ("fingerprint_st", "soft_tanimoto")):
             channels[name] = fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
                                                  workers=cfg.workers, how=how)
@@ -405,8 +452,12 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
                              fp_model.layout, fp_model.bits, workers=cfg.workers)
         names = list(ranker.get("features", rank31.USED))
         X, Y, M = ranker["train"]
-        models = rank31.fit(X[:, rank31.columns(names)], Y, M, ranker.get("priors", rank31.PRIORS),
-                            ranker.get("seeds", rank31.SEEDS))
+        X = X[:, rank31.columns(names)]
+        if join:  # the source as a feature; the training rows hold no PubChem-only candidate (column of 0)
+            frame[rank31.SOURCE] = frame["key"].isin(joined).astype(np.float32)
+            names = [*names, rank31.SOURCE]
+            X = np.column_stack([X, np.zeros(len(X), np.float32)])
+        models = rank31.fit(X, Y, M, ranker.get("priors", rank31.PRIORS), ranker.get("seeds", rank31.SEEDS))
         analog = dict(zip(zip(df["molecule_id"], df["key"]), df["analog"]))
         frame["analog"] = [analog.get(mk, 0.0) for mk in zip(frame["molecule_id"], frame["key"])]
         ranked = rank_all(frame, rank31.proba(models, frame[names].to_numpy(np.float32)))
