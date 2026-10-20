@@ -395,9 +395,10 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     (ranker v2: a classifier fitted on training rows with ``label`` and ``answer``),
     ``{"mode": "combiner", "spec": {...}}`` (``casmi.combiners.combine_rows``) or
     ``{"mode": "rank31", "train": (X, Y, M), ["features": [...], "priors": [...], "seeds": [...],
-    "pubchem_join": {"top": N}]}`` (``casmi.rank31``: the V33 features and ranker, fitted on rows in
-    ``rank_train.npz`` format; with ``pubchem_join`` and the PubChem pool, ``pubchem_join`` adds N
-    PubChem-only candidates per molecule and the ranker gets their source as ``src_pubchem``);
+    "pubchem_join": {"top": N}, "popularity": {"mu": μ}]}`` (``casmi.rank31``: the V33 features and
+    ranker, fitted on rows in ``rank_train.npz`` format; with ``pubchem_join`` and the PubChem pool,
+    ``pubchem_join`` adds N PubChem-only candidates per molecule and the ranker gets their source as
+    ``src_pubchem``; ``popularity`` applies V33's popularity re-order to the ranker's probabilities);
     popularity is read from ``popularity.parquet`` next to the pool.
     """
     from casmi import rank31
@@ -460,7 +461,14 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
         models = rank31.fit(X, Y, M, ranker.get("priors", rank31.PRIORS), ranker.get("seeds", rank31.SEEDS))
         analog = dict(zip(zip(df["molecule_id"], df["key"]), df["analog"]))
         frame["analog"] = [analog.get(mk, 0.0) for mk in zip(frame["molecule_id"], frame["key"])]
-        ranked = rank_all(frame, rank31.proba(models, frame[names].to_numpy(np.float32)))
+        score = rank31.proba(models, frame[names].to_numpy(np.float32))
+        if ranker.get("popularity"):
+            pop = rank31.popularity_columns(frame["key"].tolist(), pd.read_parquet(pool.path / "popularity.parquet"))
+            score = rank31.popularity_scores(frame["molecule_id"].to_numpy(), score, pop.sum(axis=1),
+                                             frame["lv_max"].to_numpy(), float(ranker["popularity"]["mu"]))
+            print(f"popularity re-order: μ {ranker['popularity']['mu']}, top {rank31.POP_TOP}, "
+                  f"library gate {rank31.LIB_GATE}", flush=True)
+        ranked = rank_all(frame, score)
         print(f"rank31: {len(frame):,} candidate rows, {len(models)} models fitted on {len(Y):,} rows "
               f"({len(names)} features), {time.time() - t0:.0f}s", flush=True)
     else:

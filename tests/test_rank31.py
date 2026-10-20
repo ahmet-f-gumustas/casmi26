@@ -63,3 +63,20 @@ def test_frame_builds_one_row_per_candidate() -> None:
     assert len(df) == 2 and df.loc[0, "lv"] > 0 and df.loc[1, "lv"] == 0 and (df["top_sim"] > 0.79).all()
     assert df.loc[0, "best_tan"] > df.loc[1, "best_tan"]  # ethyl vs methyl benzoate are closer than the acetate
 
+
+def test_popularity_reorders_only_the_head_of_open_molecules() -> None:
+    mol = ["a"] * 4 + ["b"] * 2
+    p = np.array([0.9, 0.8, 0.7, 0.1, 0.9, 0.8])
+    pop = np.array([0.0, 0.0, 10.0, 10.0, 0.0, 10.0])
+    lib = np.array([0.2] * 4 + [0.95] * 2)
+    s = rank31.popularity_scores(mol, p, pop, lib, mu=0.25, top=3)
+    order_a = np.argsort(-s[:4]).tolist()
+    assert order_a == [2, 0, 1, 3]  # the popular third candidate moves up, the fourth stays below the head
+    assert np.argsort(-s[4:]).tolist() == [0, 1]  # strong library match: untouched
+    assert np.array_equal(rank31.popularity_scores(mol, p, pop, lib, mu=0.0), p)
+
+
+def test_popularity_columns_default_to_zero() -> None:
+    t = pd.DataFrame({"key": ["A"], "pc_sid": [9.0], "pc_pmid": [0.0]})
+    cols = rank31.popularity_columns(["A", "B"], t)
+    assert np.allclose(cols, [[np.log(10.0), 0.0], [0.0, 0.0]])

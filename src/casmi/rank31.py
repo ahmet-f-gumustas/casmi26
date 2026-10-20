@@ -349,3 +349,41 @@ def columns(names: Sequence[str] = USED) -> list[int]:
     """Column indices of ``names`` in the full ``FEATURES`` matrix (``rank_train.npz`` order)."""
     return [FEATURES.index(n) for n in names]
 
+
+# --- popularity prior (V33 stage 2) ---------------------------------------------------------------
+
+POP_TOP = 60
+LIB_GATE = 0.90
+POP_FEATURES = ["pop_sid", "pop_pmid"]  # log1p(PubChem substances), log1p(PubMed records)
+
+
+def popularity_columns(keys: Sequence[str], table: pd.DataFrame) -> NDArray[np.float32]:
+    """``POP_FEATURES`` per key from a popularity table (key, pc_sid, pc_pmid); 0 where PubChem lacks it."""
+    t = table.set_index("key")
+    sid = t["pc_sid"].reindex(keys).fillna(0.0).to_numpy(np.float64)
+    pm = t["pc_pmid"].reindex(keys).fillna(0.0).to_numpy(np.float64)
+    return np.column_stack([np.log1p(sid), np.log1p(pm)]).astype(np.float32)
+
+
+def popularity_scores(molecule_id: Sequence[str], p: NDArray, pop: NDArray, lib_max: NDArray, mu: float,
+                      top: int = POP_TOP, gate: float = LIB_GATE) -> NDArray[np.float64]:
+    """Scores whose per-molecule order is V33's popularity re-order.
+
+    For a molecule whose best library match is below ``gate``, its ``top`` candidates by ``p`` are
+    re-sorted by z(p over them) + ``mu`` · pop (pop = log1p substances + log1p PubMed) and stay above
+    the rest, which keep their order; other molecules are unchanged.
+    """
+    p = np.asarray(p, np.float64)
+    out = p.copy()
+    if mu == 0:
+        return out
+    pop, lib_max = np.asarray(pop, np.float64), np.asarray(lib_max, np.float64)
+    for idx in pd.Series(range(len(p))).groupby(np.asarray(molecule_id)).indices.values():
+        if lib_max[idx].max() >= gate:
+            continue
+        head = idx[np.argsort(-p[idx], kind="stable")[:top]]
+        s = p[head]
+        sd = s.std()
+        z = (s - s.mean()) / sd if sd > 1e-12 else np.zeros(len(head))
+        out[head] = 100.0 + z + mu * pop[head]
+    return out
