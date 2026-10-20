@@ -6,6 +6,8 @@ casmi26 — third-party material
      input preparation (prep_peaks, peak merging, adduct / instrument vocabularies) so
      that the published checkpoints below load unchanged.
    - scripts/fork_prvsiyan.py rebuilds its scored V33 cell, unmodified, as a private kernel.
+   - src/casmi/rank31.py ports its candidate ranking features (rank_features), its MetFrag-lite
+     fragmentation score and its ranker recipe (HistGradientBoosting, class weights, seeds).
 
 2. prvsiyan/casmi26-fp-models-v2 (Kaggle dataset; fp_single_s2.pt, fp_merged_m1.pt) and
    fp_bits.npy from prvsiyan/coconut-casmi26-candidates, Creative Commons

@@ -55,6 +55,9 @@ DATASETS = {
     "fp_final_big": ("casmi26-fp-final-big", [WORK_DIR / "fp_models" / "final_big" / "fp_casmi.pt"],
                      "Final spectrum-to-fingerprint model (casmi.fpmodel.SpecFormer) on all cleaned training spectra: "
                      "d 768, NP weight 5, 20 epochs; loadable with torch.load(weights_only=True)."),
+    "rank31_rows": ("casmi26-rank31-rows", [WORK_DIR / "rank31_rows" / "rank31_rows.npz"],
+                    "Ranker training rows in rank_train.npz format (X: the 31 features of casmi.rank31, Y: answer, "
+                    "M: 0 = Class 1 / 1 = Class 2 simulation, G: query) from our simulated splits r3_seed10-14."),
     "library": ("casmi26-library", [WORK_DIR / "train_clean.parquet"],
                 "Competition training spectra cleaned like the test: peaks above precursor + 2 Da removed, base "
                 "peak < 1000 dropped, precursor checked against the labelled structure (|ppm| <= 20)."),

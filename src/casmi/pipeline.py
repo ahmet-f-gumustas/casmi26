@@ -271,7 +271,7 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     from casmi.ranker import needed_channels, rank_molecule
 
     cfg_r = ranker if "mode" in ranker else {"mode": "weighted", "weights": dict(ranker)}
-    if cfg_r["mode"] in ("learned", "combiner"):
+    if cfg_r["mode"] in ("learned", "combiner", "rank31"):
         return run_learned_pipeline(queries, pool, library, index, row_key, cfg_r, cfg, fp_model, in_library, allowed)
     need = needed_channels(cfg_r)
     queries = clean_queries(queries)
@@ -354,10 +354,14 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     """Every channel and per-candidate features, then a learned ranker or a combiner.
 
     ``ranker``: ``{"mode": "learned", "features": [...], "bags": int, "params": {...}, "train": DataFrame}``
-    (ranker v2: a classifier fitted on training rows with ``label`` and ``answer``) or
-    ``{"mode": "combiner", "spec": {...}}`` (``casmi.combiners.combine_rows``); popularity is read from
-    ``popularity.parquet`` next to the pool.
+    (ranker v2: a classifier fitted on training rows with ``label`` and ``answer``),
+    ``{"mode": "combiner", "spec": {...}}`` (``casmi.combiners.combine_rows``) or
+    ``{"mode": "rank31", "train": (X, Y, M), ["features": [...], "priors": [...], "seeds": [...]]}``
+    (``casmi.rank31``: the V33 features and ranker, fitted on rows in ``rank_train.npz`` format);
+    popularity is read from ``popularity.parquet`` next to the pool.
     """
+    from casmi import rank31
+    from casmi.channels.analog import AnalogConfig
     from casmi.channels.fingerprint import fingerprint_channel
     from casmi.combiners import combine_rows
     from casmi.ranker_v2 import candidate_features, fit_bags, predict, rank_all
@@ -371,12 +375,15 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     windows = candidate_windows(queries, pool, cfg)
     degraded.note("molecule without candidates in its window", sum(1 for v in windows.values() if not v))
     smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
-    hits = analog_hits(queries, index, allowed=allowed, workers=cfg.workers)
+    # rank31 builds its analog list from more hits per spectrum; the analog channel reads the first top_k
+    acfg = AnalogConfig(top_k=rank31.ANALOG_TOP_K) if ranker["mode"] == "rank31" else None
+    hits = analog_hits(queries, index, cfg=acfg, allowed=allowed, workers=cfg.workers)
     channels: dict[str, ChannelScores] = {
         "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits),
         "fingerprint": {}, "fingerprint_st": {},
         "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers),
     }
+    logits = None
     if fp_model is not None:
         logits = fingerprint_logits(queries, windows, fp_model)
         for name, how in (("fingerprint", "dot"), ("fingerprint_st", "soft_tanimoto")):
@@ -393,6 +400,18 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     if ranker["mode"] == "combiner":
         ranked = rank_all(df, combine_rows(df, ranker["spec"]))
         print(f"combiner {ranker['spec']['kind']}: {len(df):,} candidate rows, {time.time() - t0:.0f}s", flush=True)
+    elif ranker["mode"] == "rank31":
+        frame = rank31.frame(queries, windows, smiles_of, hits, row_key, channels["library_max"], logits,
+                             fp_model.layout, fp_model.bits, workers=cfg.workers)
+        names = list(ranker.get("features", rank31.USED))
+        X, Y, M = ranker["train"]
+        models = rank31.fit(X[:, rank31.columns(names)], Y, M, ranker.get("priors", rank31.PRIORS),
+                            ranker.get("seeds", rank31.SEEDS))
+        analog = dict(zip(zip(df["molecule_id"], df["key"]), df["analog"]))
+        frame["analog"] = [analog.get(mk, 0.0) for mk in zip(frame["molecule_id"], frame["key"])]
+        ranked = rank_all(frame, rank31.proba(models, frame[names].to_numpy(np.float32)))
+        print(f"rank31: {len(frame):,} candidate rows, {len(models)} models fitted on {len(Y):,} rows "
+              f"({len(names)} features), {time.time() - t0:.0f}s", flush=True)
     else:
         feats = list(ranker["features"])
         models = fit_bags(ranker["train"], feats, int(ranker.get("bags", 4)), params=ranker.get("params"))

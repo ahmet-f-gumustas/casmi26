@@ -134,6 +134,11 @@ else:
     ranker = dict(CASMI_RANKER)
     if ranker.get("mode") == "learned":
         ranker["train"] = pd.read_parquet(find("ranker_train.parquet"))
+    if ranker.get("mode") == "rank31":
+        import numpy as np
+        rows = np.load(find(ranker["rows"]), allow_pickle=False)
+        ranker["train"] = (rows["X"], rows["Y"], rows["M"])
+        print(f"rank31 training rows {ranker['rows']} ({ranker['dataset']}): {len(rows['Y']):,} rows", flush=True)
     preds, _ = run_combined_pipeline(test, pool, library, index, row_key, ranker, cfg, fp_model=fp_model,
                                      tier=CASMI_TIER, alt_adducts=CASMI_ALT)
 sub = make_submission(preds, sample["molecule_id"].tolist())
@@ -142,13 +147,13 @@ ranked = sum(1 for v in preds.values() if v)
 peak_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
 print(f"wrote {path}: {len(sub)} rows, {ranked} molecules with library hits")
 print(f"CASMI_RUNTIME_S={time.time() - T0:.0f} CASMI_PEAK_RSS_GB={peak_gb:.2f}")
+from casmi import degraded
+print(degraded.report(), flush=True)
 '''
 
 
 def package_b64() -> str:
     buf = io.BytesIO()
-from casmi import degraded
-print(degraded.report(), flush=True)
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(REPO_ROOT / "src" / "casmi", arcname="casmi",
                 filter=lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti)
@@ -184,7 +189,8 @@ def build(out: Path, mode: str = "library", ranker: dict | None = None, pool: st
             "enable_internet": False, "competition_sources": [COMPETITION],
             "dataset_sources": [POOLS[pool][0], *DATASETS] + (["red6161/casmi26-analog-index"] if mode != "library" else [])
             + (FP_MODELS[fp][0] if fp else []) + (["red6161/casmi26-ranker-train"] if ranker.get("mode") == "learned"
-                                                   else []),
+                                                   else [])
+            + ([ranker["dataset"]] if ranker.get("mode") == "rank31" else []),
             "kernel_sources": [], "model_sources": [], "keywords": [],
             "docker_image_pinning_type": "original"}  # rerun on the image the version was saved with
     if fp:
@@ -206,7 +212,7 @@ def placeholder_truth() -> dict[str, str]:
     return m.groupby("molecule_id")["normalized_smiles"].agg(lambda s: s.mode().iloc[0]).to_dict()
 
 
-def local_check(notebook: Path, pool: str = "base", fp: str | None = None) -> None:
+def local_check(notebook: Path, pool: str = "base", fp: str | None = None, ranker: dict | None = None) -> None:
     root = WORK_DIR / "kaggle" / "fake_input"
     work = WORK_DIR / "kaggle" / "fake_working"
     links = {
@@ -219,6 +225,8 @@ def local_check(notebook: Path, pool: str = "base", fp: str | None = None) -> No
     if fp:
         links.update({root / name: src for name, src in FP_MODELS[fp][1].items()})
     links[root / "casmi26-ranker-train"] = WORK_DIR / "ranker_train"
+    if ranker and ranker.get("mode") == "rank31":  # the training rows' dataset, from its local copy
+        links[root / ranker["dataset"].split("/")[1]] = REPO_ROOT / ranker["local"]
     for stale in root.iterdir() if root.exists() else []:  # links from an earlier check with other datasets
         if stale.is_symlink() and stale not in links:
             stale.unlink()
@@ -270,6 +278,8 @@ def main() -> None:
             ranker = {"mode": "learned", "features": spec["features"], "bags": spec["bags"], "params": spec["params"]}
         elif "combiner" in spec:  # validation/eval_combiners.py: {"combiner": {"kind": ..., ...}}
             ranker = {"mode": "combiner", "spec": spec["combiner"]}
+        elif "rank31" in spec:  # {"rank31": {"rows": <npz name>, "dataset": <owner/slug>, "local": <folder>}}
+            ranker = {"mode": "rank31", **spec["rank31"]}
         else:
             ranker = spec.get("ranker") or {"mode": "weighted", "weights": spec["weights"]}
     tier = json.loads(args.tier.read_text())["tier"] if args.tier else None
@@ -277,7 +287,7 @@ def main() -> None:
     notebook = build(args.out, args.mode, ranker, args.pool, args.fp, tier, alt)
     print(f"wrote {notebook} ({notebook.stat().st_size / 1e3:.0f} kB)")
     if args.local_check:
-        local_check(notebook, args.pool, args.fp)
+        local_check(notebook, args.pool, args.fp, ranker)
 
 
 if __name__ == "__main__":
