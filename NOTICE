@@ -15,6 +15,9 @@ casmi26 — third-party material
    our datasets, and no adapted checkpoint is published. Their licence is not Apache 2.0:
    the non-commercial and share-alike terms apply to any further use.
 
+   prvsiyan/casmi26-ranker-features (rank_train.npz) is CC BY-NC-SA 4.0 as well. None of the
+   CC BY-NC-SA material enters a final submission; it is used for leaderboard comparisons only.
+
 3. prvsiyan/pubchem-npformula-massindex and prvsiyan/pubchem-popularity-counts (Kaggle
    datasets, CC0 1.0), built from NCBI PubChem (public domain).
 
