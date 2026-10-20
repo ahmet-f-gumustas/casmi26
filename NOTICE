@@ -26,3 +26,32 @@ casmi26 — third-party material
 4. COCONUT 2.0 natural products (coconut.naturalproducts.net), CC0 1.0.
 
 5. Competition data: Enveda CASMI 2026 (Kaggle), under the competition's data licence.
+
+6. coleygroup/ms-pred (github.com/coleygroup/ms-pred, commit 708148c2), MIT License,
+   Copyright (c) 2023 Samuel Goldman.
+   - src/casmi/forward/glacier.py and src/casmi/forward/iceberg.py re-implement the inference
+     paths of GLACIER and ICEBERG 2.1 in plain PyTorch (no code of the repository is executed).
+   - The Graphormer encoder in glacier.py follows ms-pred's graphormer/ files: MIT License,
+     Copyright (c) Microsoft Corporation; parts Copyright (c) Facebook, Inc. and its affiliates.
+   - GatedGraphConv in iceberg.py comes from DGL (as copied into ms-pred's nn_utils/dgl_modules.py),
+     Apache License 2.0.
+   - Weights: red6161/casmi26-forward-msg holds weights-only copies of the public MassSpecGym
+     checkpoints (ICEBERG msg_all, GLACIER msg) linked from the ms-pred README; MassSpecGym
+     (huggingface.co/datasets/roman-bushuiev/MassSpecGym) is MIT. No NIST-trained weights.
+
+   MIT License text (ms-pred):
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+   and associated documentation files (the "Software"), to deal in the Software without
+   restriction, including without limitation the rights to use, copy, modify, merge, publish,
+   distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+   Software is furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all copies or
+   substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+   BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

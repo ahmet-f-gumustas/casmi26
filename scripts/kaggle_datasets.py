@@ -7,6 +7,7 @@
 - ``red6161/casmi26-ranker-train``: outputs/ranker_train/ranker_train.parquet (ranker v2 training rows)
 - ``red6161/casmi26-fp-model``: outputs/fp_models/submit/fp_casmi.pt (our fingerprint model)
 - ``red6161/casmi26-fp-final-same`` / ``-big``: outputs/fp_models/final_{same,big}/fp_casmi.pt (on all data)
+- ``red6161/casmi26-forward-msg``: outputs/forward_msg (ICEBERG / GLACIER weights for casmi.forward, MIT)
 - ``red6161/casmi26-wheels``: ms_entropy wheels for CPython 3.10–3.13 (RDKit comes from
   the public ``metric/rdkit-2026-3-3-wheel`` dataset)
 
@@ -58,6 +59,11 @@ DATASETS = {
     "rank31_rows": ("casmi26-rank31-rows", [WORK_DIR / "rank31_rows" / "rank31_rows.npz"],
                     "Ranker training rows in rank_train.npz format (X: the 31 features of casmi.rank31, Y: answer, "
                     "M: 0 = Class 1 / 1 = Class 2 simulation, G: query) from our simulated splits r3_seed10-14."),
+    "forward_msg": ("casmi26-forward-msg", [WORK_DIR / "forward_msg" / n for n in (
+        "iceberg_msg_all_gen_sd.pt", "iceberg_msg_all_inten_contr_sd.pt", "glacier_msg_sd.pt",
+        "LICENSE-ms-pred.txt", "PROVENANCE.md")],
+                    "Weights-only copies of the MassSpecGym checkpoints of ICEBERG 2.1 and GLACIER (coleygroup/ms-pred, "
+                    "MIT) for casmi.forward; provenance and sha256 values in PROVENANCE.md."),
     "library": ("casmi26-library", [WORK_DIR / "train_clean.parquet"],
                 "Competition training spectra cleaned like the test: peaks above precursor + 2 Da removed, base "
                 "peak < 1000 dropped, precursor checked against the labelled structure (|ppm| <= 20)."),

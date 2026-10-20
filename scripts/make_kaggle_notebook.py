@@ -39,6 +39,7 @@ from casmi.config import COMPETITION, DATA_DIR, REPO_ROOT, WORK_DIR
 from casmi.candidates import POOL_DIR
 
 KERNEL_ID = "red6161/casmi26-submission"
+FORWARD = ("red6161/casmi26-forward-msg", WORK_DIR / "forward_msg")  # casmi.forward weights (scripts/kaggle_datasets.py)
 DATASETS = ["red6161/casmi26-library", "red6161/casmi26-wheels", "metric/rdkit-2026-3-3-wheel"]
 # local folders mirror what each dataset holds (the PubChem pool is checked from its upload staging, fps.npz)
 POOLS = {"base": ("red6161/casmi26-pool", POOL_DIR),
@@ -139,6 +140,10 @@ else:
         rows = np.load(find(ranker["rows"]), allow_pickle=False)
         ranker["train"] = (rows["X"], rows["Y"], rows["M"])
         print(f"rank31 training rows {ranker['rows']} ({ranker['dataset']}): {len(rows['Y']):,} rows", flush=True)
+    if ranker.get("forward"):
+        from casmi.forward import load_model
+        ranker["forward_models"] = {n: load_model(n, find) for n in ranker["forward"]["models"]}
+        print(f"forward models {list(ranker['forward_models'])} loaded, {time.time() - T0:.0f}s", flush=True)
     preds, _ = run_combined_pipeline(test, pool, library, index, row_key, ranker, cfg, fp_model=fp_model,
                                      tier=CASMI_TIER, alt_adducts=CASMI_ALT)
 sub = make_submission(preds, sample["molecule_id"].tolist())
@@ -191,7 +196,8 @@ def build(out: Path, mode: str = "library", ranker: dict | None = None, pool: st
             "dataset_sources": [POOLS[pool][0], *DATASETS] + (["red6161/casmi26-analog-index"] if mode != "library" else [])
             + (FP_MODELS[fp][0] if fp else []) + (["red6161/casmi26-ranker-train"] if ranker.get("mode") == "learned"
                                                    else [])
-            + ([ranker["dataset"]] if ranker.get("mode") == "rank31" else []),
+            + ([ranker["dataset"]] if ranker.get("mode") == "rank31" else [])
+            + ([FORWARD[0]] if ranker.get("forward") else []),
             "kernel_sources": [], "model_sources": [], "keywords": [],
             "docker_image_pinning_type": "original"}  # rerun on the image the version was saved with
     if fp:
@@ -228,6 +234,8 @@ def local_check(notebook: Path, pool: str = "base", fp: str | None = None, ranke
     links[root / "casmi26-ranker-train"] = WORK_DIR / "ranker_train"
     if ranker and ranker.get("mode") == "rank31":  # the training rows' dataset, from its local copy
         links[root / ranker["dataset"].split("/")[1]] = REPO_ROOT / ranker["local"]
+    if ranker and ranker.get("forward"):
+        links[root / FORWARD[0].split("/")[1]] = FORWARD[1]
     for stale in root.iterdir() if root.exists() else []:  # links from an earlier check with other datasets
         if stale.is_symlink() and stale not in links:
             stale.unlink()

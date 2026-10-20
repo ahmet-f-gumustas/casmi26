@@ -385,6 +385,37 @@ def run_combined_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: P
     return preds, channels
 
 
+def forward_stage(spec: Mapping, models: Mapping | None, queries: pd.DataFrame, frame: pd.DataFrame,
+                  score: np.ndarray, smiles_of: Mapping[str, str]) -> np.ndarray:
+    """The ranker's ``score`` with its top ``spec["top"]`` re-ordered by forward-model scores (``casmi.forward``).
+
+    ``spec``: ``{"models": [names], "fusion": "rrf", "top": K, "rrf_k": k, "budget_s": seconds}``; ``models``
+    maps the names to loaded predictors. Molecules are scored from the weakest library match up, so a spent
+    budget leaves the molecules the library already identifies in the ranker's order. The budget is shared:
+    each model gets what the ones before it left.
+    """
+    from casmi.forward import score as fs
+
+    names = list(spec["models"])
+    missing = [n for n in names if n not in (models or {})]
+    if missing:
+        raise ValueError(f"forward models {missing} were not loaded")
+    if spec.get("fusion", "rrf") != "rrf":
+        raise ValueError(f"unknown forward fusion {spec['fusion']!r}")
+    top = int(spec.get("top", fs.TOP_K))
+    mol, keys = frame["molecule_id"].to_numpy(), frame["key"].to_numpy()
+    heads = fs.top_keys(mol, keys, score, top)
+    lib = frame.groupby("molecule_id")["lv_max"].max()
+    order = sorted(heads, key=lambda m: (lib.get(m, 0.0), m))
+    budget, t0, cols = spec.get("budget_s"), time.time(), []
+    for name in names:
+        left = None if budget is None else max(float(budget) - (time.time() - t0), 0.0)
+        scores, info = fs.forward_scores(models[name], queries, heads, smiles_of, order=order, budget_s=left)
+        cols.append(fs.column(mol, keys, scores))
+        print(f"forward {name}: {info}", flush=True)
+    return fs.rrf(mol, score, cols, int(spec.get("rrf_k", fs.RRF_K)), top)
+
+
 def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Path, index, row_key: Mapping[int, str],
                          ranker: Mapping, cfg: PipelineConfig = PipelineConfig(), fp_model=None,
                          in_library: pd.Series | None = None, allowed: np.ndarray | None = None,
@@ -398,8 +429,9 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
     "pubchem_join": {"top": N}, "popularity": {"mu": μ}]}`` (``casmi.rank31``: the V33 features and
     ranker, fitted on rows in ``rank_train.npz`` format; with ``pubchem_join`` and the PubChem pool,
     ``pubchem_join`` adds N PubChem-only candidates per molecule and the ranker gets their source as
-    ``src_pubchem``; ``popularity`` applies V33's popularity re-order to the ranker's probabilities);
-    popularity is read from ``popularity.parquet`` next to the pool.
+    ``src_pubchem``; ``popularity`` applies V33's popularity re-order to the ranker's probabilities;
+    ``forward`` re-orders the top candidates by forward-model scores, see ``forward_stage``, with the loaded
+    predictors in ``ranker["forward_models"]``); popularity is read from ``popularity.parquet`` next to the pool.
     """
     from casmi import rank31
     from casmi.channels.analog import AnalogConfig
@@ -464,6 +496,9 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
                   f"library gate {rank31.LIB_GATE}", flush=True)
         print(f"rank31: {len(frame):,} candidate rows, {len(models)} models fitted on {len(Y):,} rows "
               f"({len(names)} features), {time.time() - t0:.0f}s", flush=True)
+        if ranker.get("forward"):
+            score = forward_stage(ranker["forward"], ranker.get("forward_models"), queries, frame, score, smiles_of)
+            print(f"forward stage done, {time.time() - t0:.0f}s", flush=True)
         ranked = rank_all(frame, score)
     else:
         lib = pd.read_parquet(library, columns=["row", "key"])
