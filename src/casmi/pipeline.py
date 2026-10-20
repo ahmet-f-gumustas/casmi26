@@ -428,27 +428,21 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
                                        int(join["top"]), allowed, cfg.workers)
         print(f"PubChem join: {len(joined):,} PubChem-only candidates added (top {join['top']} per molecule); "
               f"{n_before:,} → {sum(map(len, windows.values())):,} window rows, {time.time() - t0:.0f}s", flush=True)
+    print(f"analog hits and fingerprint logits: {time.time() - t0:.0f}s", flush=True)
+    t1 = time.time()
     channels: dict[str, ChannelScores] = {
-        "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits),
-        "fingerprint": {}, "fingerprint_st": {},
-        "fragment": fragment_channel(queries, windows, smiles_of, workers=cfg.workers),
-    }
-    if fp_model is not None:
-        for name, how in (("fingerprint", "dot"), ("fingerprint_st", "soft_tanimoto")):
-            channels[name] = fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
-                                                 workers=cfg.workers, how=how)
+        "analog": analog_channel(queries, windows, pool, index, row_key, allowed=allowed, hits=hits)}
+    if ranker["mode"] != "rank31":  # rank31 computes its own fragment and model features
+        channels["fragment"] = fragment_channel(queries, windows, smiles_of, workers=cfg.workers)
+        channels["fingerprint"], channels["fingerprint_st"] = {}, {}
+        if fp_model is not None:
+            for name, how in (("fingerprint", "dot"), ("fingerprint_st", "soft_tanimoto")):
+                channels[name] = fingerprint_channel(logits, windows, smiles_of, fp_model.layout, fp_model.bits,
+                                                     workers=cfg.workers, how=how)
     channels["library"], channels["library_max"] = library_channel(queries, windows, library, cfg, in_library,
                                                                    both=True)
-    print(f"feature channels: {time.time() - t0:.0f}s", flush=True)
-    lib = pd.read_parquet(library, columns=["row", "key"])
-    if in_library is not None:
-        lib = lib[lib["row"].map(in_library).fillna(False).to_numpy(dtype=bool)]
-    pop = pd.read_parquet(pool.path / "popularity.parquet")
-    df = candidate_features(queries, windows, channels, hits, row_key, pool.meta, pool.fps, set(lib["key"]), pop)
-    if ranker["mode"] == "combiner":
-        ranked = rank_all(df, combine_rows(df, ranker["spec"]))
-        print(f"combiner {ranker['spec']['kind']}: {len(df):,} candidate rows, {time.time() - t0:.0f}s", flush=True)
-    elif ranker["mode"] == "rank31":
+    print(f"feature channels ({', '.join(channels)}): {time.time() - t1:.0f}s", flush=True)
+    if ranker["mode"] == "rank31":
         frame = rank31.frame(queries, windows, smiles_of, hits, row_key, channels["library_max"], logits,
                              fp_model.layout, fp_model.bits, workers=cfg.workers)
         names = list(ranker.get("features", rank31.USED))
@@ -459,8 +453,8 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
             names = [*names, rank31.SOURCE]
             X = np.column_stack([X, np.zeros(len(X), np.float32)])
         models = rank31.fit(X, Y, M, ranker.get("priors", rank31.PRIORS), ranker.get("seeds", rank31.SEEDS))
-        analog = dict(zip(zip(df["molecule_id"], df["key"]), df["analog"]))
-        frame["analog"] = [analog.get(mk, 0.0) for mk in zip(frame["molecule_id"], frame["key"])]
+        analog = channels["analog"]
+        frame["analog"] = [analog.get(m, {}).get(k, 0.0) for m, k in zip(frame["molecule_id"], frame["key"])]
         score = rank31.proba(models, frame[names].to_numpy(np.float32))
         if ranker.get("popularity"):
             pop = rank31.popularity_columns(frame["key"].tolist(), pd.read_parquet(pool.path / "popularity.parquet"))
@@ -468,13 +462,23 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
                                              frame["lv_max"].to_numpy(), float(ranker["popularity"]["mu"]))
             print(f"popularity re-order: μ {ranker['popularity']['mu']}, top {rank31.POP_TOP}, "
                   f"library gate {rank31.LIB_GATE}", flush=True)
-        ranked = rank_all(frame, score)
         print(f"rank31: {len(frame):,} candidate rows, {len(models)} models fitted on {len(Y):,} rows "
               f"({len(names)} features), {time.time() - t0:.0f}s", flush=True)
+        ranked = rank_all(frame, score)
     else:
-        feats = list(ranker["features"])
-        models = fit_bags(ranker["train"], feats, int(ranker.get("bags", 4)), params=ranker.get("params"))
-        ranked = rank_all(df, predict(models, df, feats))
-        print(f"ranker v2: {len(df):,} candidate rows, {len(models)} bags fitted on {len(ranker['train']):,} rows, "
-              f"{time.time() - t0:.0f}s", flush=True)
+        lib = pd.read_parquet(library, columns=["row", "key"])
+        if in_library is not None:
+            lib = lib[lib["row"].map(in_library).fillna(False).to_numpy(dtype=bool)]
+        pop = pd.read_parquet(pool.path / "popularity.parquet")
+        df = candidate_features(queries, windows, channels, hits, row_key, pool.meta, pool.fps, set(lib["key"]), pop)
+        if ranker["mode"] == "combiner":
+            ranked = rank_all(df, combine_rows(df, ranker["spec"]))
+            print(f"combiner {ranker['spec']['kind']}: {len(df):,} candidate rows, {time.time() - t0:.0f}s",
+                  flush=True)
+        else:
+            feats = list(ranker["features"])
+            models = fit_bags(ranker["train"], feats, int(ranker.get("bags", 4)), params=ranker.get("params"))
+            ranked = rank_all(df, predict(models, df, feats))
+            print(f"ranker v2: {len(df):,} candidate rows, {len(models)} bags fitted on {len(ranker['train']):,} "
+                  f"rows, {time.time() - t0:.0f}s", flush=True)
     return {m: [smiles_of[k] for k in ranked.get(m, [])] for m in windows}, channels
