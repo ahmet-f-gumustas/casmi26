@@ -231,12 +231,16 @@ def library_channel(queries: pd.DataFrame, windows: Mapping[str, list[str]], lib
 
 def fingerprint_logits(queries: pd.DataFrame, windows: Mapping[str, list[str]], model) -> dict[str, np.ndarray]:
     """Per-bit logits per molecule (``model.logits`` over its spectra) for molecules with candidates."""
+    from casmi import degraded
+
     logits = {}
     for mol_id, grp in queries.groupby("molecule_id"):
         if windows.get(mol_id):
             z = model.logits(grp)
             if z is not None:
                 logits[mol_id] = z
+            else:
+                degraded.note("molecule without fingerprint logits")
     return logits
 
 
@@ -360,9 +364,12 @@ def run_learned_pipeline(queries: pd.DataFrame, pool: CandidatePool, library: Pa
 
     if fp_model is None and (ranker["mode"] != "combiner" or ranker["spec"].get("fp", "fingerprint") is not None):
         raise ValueError("the ranker reads the fingerprint channel but no fp_model was given")
+    from casmi import degraded
+
     t0 = time.time()
     queries = clean_queries(queries).reset_index(drop=True)
     windows = candidate_windows(queries, pool, cfg)
+    degraded.note("molecule without candidates in its window", sum(1 for v in windows.values() if not v))
     smiles_of = dict(zip(pool.meta["key"], pool.meta["smiles"]))
     hits = analog_hits(queries, index, allowed=allowed, workers=cfg.workers)
     channels: dict[str, ChannelScores] = {

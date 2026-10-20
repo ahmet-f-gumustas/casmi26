@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from casmi import degraded
 from casmi.config import TOP_K, WORK_DIR
 from casmi.metric import dedup_by_key, split_guesses
 
@@ -26,6 +27,8 @@ FILLER_SMILES = "C"
 def format_guesses(smiles: Sequence[str], k: int = TOP_K, dedup: bool = True) -> str:
     """``;``-joined top-``k`` guesses; with ``dedup``, one per scorer key and unparseable ones dropped."""
     guesses = dedup_by_key(split_guesses(smiles), k) if dedup else split_guesses(smiles)[:k]
+    if not guesses:
+        degraded.note("molecule given the filler guess")
     return ";".join(guesses or [FILLER_SMILES])
 
 

@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from numpy.typing import NDArray
 from torch import nn
 
+from casmi import degraded
 from casmi.data import mean_ce
 
 ADDUCT_LIST = ["[M+H]+", "[M+NH4]+", "[M+Na]+", "[M+K]+", "[M-H2O+H]+", "[M-2H2O+H]+", "[M]+",
@@ -210,6 +211,8 @@ class APBundle:
 
     @classmethod
     def load(cls, paths: Sequence[Path], bits: NDArray[np.int64], device: str | None = None) -> APBundle:
+        if device is None and not torch.cuda.is_available():
+            degraded.note("fingerprint model on the CPU (no GPU)")
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         single, merged, nbits = [], [], None
         for p in sorted(paths):
@@ -326,6 +329,8 @@ class CasmiBundle:
 
     @classmethod
     def load(cls, paths: Sequence[Path], device: str | None = None) -> CasmiBundle:
+        if device is None and not torch.cuda.is_available():
+            degraded.note("fingerprint model on the CPU (no GPU)")
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         nets, nbits = [], None
         for p in sorted(paths):

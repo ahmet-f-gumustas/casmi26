@@ -147,6 +147,8 @@ print(f"CASMI_RUNTIME_S={time.time() - T0:.0f} CASMI_PEAK_RSS_GB={peak_gb:.2f}")
 
 def package_b64() -> str:
     buf = io.BytesIO()
+from casmi import degraded
+print(degraded.report(), flush=True)
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(REPO_ROOT / "src" / "casmi", arcname="casmi",
                 filter=lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti)
@@ -183,7 +185,8 @@ def build(out: Path, mode: str = "library", ranker: dict | None = None, pool: st
             "dataset_sources": [POOLS[pool][0], *DATASETS] + (["red6161/casmi26-analog-index"] if mode != "library" else [])
             + (FP_MODELS[fp][0] if fp else []) + (["red6161/casmi26-ranker-train"] if ranker.get("mode") == "learned"
                                                    else []),
-            "kernel_sources": [], "model_sources": [], "keywords": []}
+            "kernel_sources": [], "model_sources": [], "keywords": [],
+            "docker_image_pinning_type": "original"}  # rerun on the image the version was saved with
     if fp:
         meta["machine_shape"] = "NvidiaTeslaT4"  # recent PyTorch builds no longer run on the P100
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
