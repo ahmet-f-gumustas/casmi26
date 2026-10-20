@@ -716,13 +716,15 @@ def _read(path: Path, name: str) -> dict:
 
 
 def _fill(module: _Conditioned, sd: dict[str, Tensor], path: Path) -> None:
-    """``load_state_dict(strict=True)``; the buffers upstream computes must equal the stored ones."""
+    """``load_state_dict(strict=True)``; the buffers upstream computes must equal the stored ones, up to float
+    rounding (libm differs across platforms: ~6e-8 on aarch64). The stored values are the ones used."""
     if any(not torch.equal(sd[k], sd["root_module" + k[3:]]) for k in sd if k.startswith("gnn.")):
         raise ValueError(f"{path}: root_module and gnn differ (upstream shares them)")
     computed = {k: module.state_dict()[k].clone() for k in module.COMPUTED}
     module.load_state_dict(sd, strict=True)
     stored = module.state_dict()
-    diff = [k for k, v in computed.items() if v.dtype != stored[k].dtype or not torch.equal(v, stored[k])]
+    diff = [k for k, v in computed.items()
+            if v.dtype != stored[k].dtype or not torch.allclose(v, stored[k], rtol=0.0, atol=1e-5)]
     if diff:
         raise ValueError(f"{path}: stored buffers differ from the ones upstream computes: {diff}")
 
