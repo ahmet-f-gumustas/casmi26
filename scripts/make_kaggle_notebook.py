@@ -169,7 +169,8 @@ def code_cells(mode: str, ranker: dict, fp: str | None = None, tier: dict | None
 
 
 def build(out: Path, mode: str = "library", ranker: dict | None = None, pool: str = "base",
-          fp: str | None = None, tier: dict | None = None, alt: dict | None = None) -> Path:
+          fp: str | None = None, tier: dict | None = None, alt: dict | None = None,
+          kernel: str = KERNEL_ID) -> Path:
     ranker = ranker or {}
     if tier is not None and pool != "pubchem":
         raise ValueError("the PubChem tier needs --pool pubchem")
@@ -184,8 +185,8 @@ def build(out: Path, mode: str = "library", ranker: dict | None = None, pool: st
     out.mkdir(parents=True, exist_ok=True)
     code_file = "casmi26-submission.ipynb"
     (out / code_file).write_text(json.dumps(nb, indent=1))
-    meta = {"id": KERNEL_ID, "title": "casmi26 submission", "code_file": code_file, "language": "python",
-            "kernel_type": "notebook", "is_private": True, "enable_gpu": fp is not None, "enable_tpu": False,
+    meta = {"id": kernel, "title": kernel.split("/")[-1].replace("-", " "), "code_file": code_file,
+            "language": "python", "kernel_type": "notebook", "is_private": True, "enable_gpu": fp is not None, "enable_tpu": False,
             "enable_internet": False, "competition_sources": [COMPETITION],
             "dataset_sources": [POOLS[pool][0], *DATASETS] + (["red6161/casmi26-analog-index"] if mode != "library" else [])
             + (FP_MODELS[fp][0] if fp else []) + (["red6161/casmi26-ranker-train"] if ranker.get("mode") == "learned"
@@ -270,6 +271,8 @@ def main() -> None:
     ap.add_argument("--tier", type=Path, default=None, help="PubChem tier config json {'tier': {...}} (--pool pubchem)")
     ap.add_argument("--alt-adducts", type=Path, default=None,
                     help="alternative-adduct slots json {'alt_adducts': {...}} (analog-only ranker)")
+    ap.add_argument("--kernel", default=KERNEL_ID,
+                    help="owner/slug to push to; a second slug lets two versions run at the same time")
     args = ap.parse_args()
     ranker = {}
     if args.mode == "combined":
@@ -284,7 +287,7 @@ def main() -> None:
             ranker = spec.get("ranker") or {"mode": "weighted", "weights": spec["weights"]}
     tier = json.loads(args.tier.read_text())["tier"] if args.tier else None
     alt = json.loads(args.alt_adducts.read_text())["alt_adducts"] if args.alt_adducts else None
-    notebook = build(args.out, args.mode, ranker, args.pool, args.fp, tier, alt)
+    notebook = build(args.out, args.mode, ranker, args.pool, args.fp, tier, alt, args.kernel)
     print(f"wrote {notebook} ({notebook.stat().st_size / 1e3:.0f} kB)")
     if args.local_check:
         local_check(notebook, args.pool, args.fp, ranker)

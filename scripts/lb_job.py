@@ -1,6 +1,6 @@
 """Leaderboard jobs for cron: an ordered submission queue and a score log.
 
-``submit``: submits a version of the submission kernel unless a submission with the same message
+``submit``: submits a version of a submission kernel (default ``KERNEL``) unless a submission with the same message
 exists already (so a rerun never spends a second slot), retries while the network is down, and
 confirms the submission in the submissions list. ``add`` appends a version to ``runs/lb_queue.json``;
 ``queue`` (run from cron) submits the queued entries not on the leaderboard yet, in order, as many as
@@ -46,13 +46,13 @@ def submissions() -> list[dict]:
     return json.loads(out)
 
 
-def submit(version: int, message: str, tries: int, wait: int) -> int:
+def submit(version: int, message: str, tries: int, wait: int, kernel: str = KERNEL) -> int:
     for attempt in range(1, tries + 1):
         try:
             if any(s["description"] == message for s in submissions()):
                 print(f"{now()} v{version}: already submitted ({message!r})", flush=True)
                 return 0
-            r = subprocess.run([KAGGLE, "competitions", "submit", "-c", COMPETITION, "-k", KERNEL, "-v", str(version),
+            r = subprocess.run([KAGGLE, "competitions", "submit", "-c", COMPETITION, "-k", kernel, "-v", str(version),
                                 "-f", "submission.csv", "-q", "-m", message], capture_output=True, text=True,
                                timeout=300)
             time.sleep(10)
@@ -72,12 +72,13 @@ def load_queue() -> list[dict]:
     return json.loads(QUEUE.read_text()) if QUEUE.exists() else []
 
 
-def add(version: int, message: str) -> int:
+def add(version: int, message: str, kernel: str = KERNEL) -> int:
     q = load_queue()
     if any(e["message"] == message for e in q):
         print(f"{now()} v{version}: already queued", flush=True)
         return 0
-    q.append({"version": version, "message": message, "added": now()})
+    q.append({"version": version, "message": message, "added": now(),
+              **({"kernel": kernel} if kernel != KERNEL else {})})
     RUNS.mkdir(exist_ok=True)
     QUEUE.write_text(json.dumps(q, indent=1) + "\n")
     print(f"{now()} v{version}: queued at position {len(q)}", flush=True)
@@ -91,7 +92,7 @@ def queue(per_day: int) -> int:
     used = sum(s["date"].startswith(today) for s in subs)
     pending = [e for e in load_queue() if e["message"] not in done]
     for e in pending[:max(per_day - used, 0)]:
-        if submit(e["version"], e["message"], tries=20, wait=90):
+        if submit(e["version"], e["message"], tries=20, wait=90, kernel=e.get("kernel", KERNEL)):
             return 1
     return 0
 
@@ -101,7 +102,8 @@ def show() -> int:
     for i, e in enumerate(load_queue(), 1):
         s = done.get(e["message"])
         state = f"submitted {s['date'][:16]} → {s['publicScore'] or s['status'].split('.')[-1]}" if s else "pending"
-        print(f"{i}. v{e['version']} [{state}] {e['message']}")
+        name = e.get("kernel", KERNEL).split("/")[-1]
+        print(f"{i}. {name} v{e['version']} [{state}] {e['message']}")
     return 0
 
 
@@ -127,18 +129,20 @@ def main() -> None:
     s.add_argument("message")
     s.add_argument("--tries", type=int, default=20)
     s.add_argument("--wait", type=int, default=90, help="seconds between attempts")
+    s.add_argument("--kernel", default=KERNEL)
     a = sub.add_parser("add")
     a.add_argument("version", type=int)
     a.add_argument("message")
+    a.add_argument("--kernel", default=KERNEL, help="owner/slug of the kernel the version belongs to")
     qp = sub.add_parser("queue")
     qp.add_argument("--per-day", type=int, default=5)
     sub.add_parser("list")
     sub.add_parser("log")
     args = ap.parse_args()
     if args.cmd == "submit":
-        sys.exit(submit(args.version, args.message, args.tries, args.wait))
+        sys.exit(submit(args.version, args.message, args.tries, args.wait, args.kernel))
     if args.cmd == "add":
-        sys.exit(add(args.version, args.message))
+        sys.exit(add(args.version, args.message, args.kernel))
     if args.cmd == "queue":
         sys.exit(queue(args.per_day))
     sys.exit(show() if args.cmd == "list" else log())
